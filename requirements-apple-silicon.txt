@@ -1,0 +1,50 @@
+# Apple Silicon optimized requirements for ColPali
+# Optimized for 16GB RAM with max 8GB usage
+
+# PyTorch for Apple Silicon (no CUDA)
+torch==2.7.0
+torchvision==0.22.0
+torchaudio==2.7.0
+
+# Core ML dependencies
+accelerate==0.30.1
+transformers==4.47.1
+safetensors==0.5.3
+tokenizers==0.21.1
+
+# ColPali engine
+colpali_engine==0.3.8
+
+# PDF processing
+pdf2image==1.17.0
+pillow==10.4.0
+
+# Database and storage
+lancedb==0.4.0
+pyarrow==20.0.0
+numpy==1.26.4
+
+# API clients (for cloud inference)
+openai==1.78.0
+requests==2.32.3
+httpx==0.28.1
+
+# MCP dependencies
+mcp==1.8.1
+
+# Utilities
+python-dotenv==1.1.0
+tqdm==4.67.1
+pydantic==2.11.4
+typing_extensions==4.13.2
+
+# File handling
+aiofiles==23.2.1
+pathlib
+
+# Memory optimization
+psutil==5.9.8
+
+# Development and testing
+pytest==8.3.4
+pytest-asyncio==0.25.0
