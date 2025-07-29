@@ -13,15 +13,16 @@ from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Dict, List, Optional, AsyncGenerator, Any
 from contextlib import asynccontextmanager
+from aiohttp import web, web_request
+import aiohttp_cors
 
 import torch
 import lancedb
 from PIL import Image
-import fitz  # PyMuPDF
-from mcp import Server
+from mcp import server
 from mcp.server.stdio import stdio_server
 
-# Mock ColPali imports (replace with actual imports)
+# Mock ColPali imports (replace with actual imports when available)
 # from colpali_engine import ColPaliModel, ColPaliProcessor
 
 
@@ -168,7 +169,8 @@ class ColPaliModelManager:
             throughput=f"Average: {total_pages / elapsed:.1f} pages/sec",
         )
 
-        return embeddings
+        # Final yield with the actual embeddings
+        yield {"embeddings": embeddings}
 
     async def encode_query(self, query: str) -> AsyncGenerator[StreamingProgress, None]:
         """Encode search query with streaming progress"""
@@ -220,20 +222,49 @@ class ColPaliModelManager:
             details="Ready for similarity search",
         )
 
-        return query_embedding
+        # Final yield with the query embedding
+        yield {"query_embedding": query_embedding}
 
 
 class LanceDBManager:
     """Handles LanceDB operations"""
 
-    def __init__(self, db_path: str = "./colpali_db"):
+    def __init__(self, db_path: Optional[str] = None):
+        # Use environment variable or default to the data directory
+        if db_path is None:
+            import os
+            db_path = os.getenv('COLPALI_DB_PATH', '/Volumes/myssd/colpali-mcp/data/embeddings_db')
+        
         self.db_path = db_path
         self.db = None
         self.table = None
+        
+        # Ensure the database directory exists and is writable
+        try:
+            os.makedirs(self.db_path, exist_ok=True)
+            # Test write permissions
+            test_file = os.path.join(self.db_path, '.write_test')
+            with open(test_file, 'w') as f:
+                f.write('test')
+            os.remove(test_file)
+            import sys
+            print(f"Database directory is writable: {self.db_path}", file=sys.stderr)
+        except (OSError, PermissionError) as e:
+            raise RuntimeError(f"Cannot create or write to database directory {db_path}: {e}")
+        
+        import sys
+        print(f"LanceDBManager initialized with path: {self.db_path}", file=sys.stderr)
 
     async def initialize(self):
         """Initialize LanceDB connection"""
-        self.db = lancedb.connect(self.db_path)
+        try:
+            self.db = lancedb.connect(self.db_path)
+            import sys
+            print(f"Successfully connected to LanceDB at {self.db_path}", file=sys.stderr)
+        except Exception as e:
+            import sys
+            print(f"Failed to connect to LanceDB: {e}", file=sys.stderr)
+            raise
 
     async def store_embeddings(
         self, embeddings: List[torch.Tensor], metadata: List[Dict]
@@ -375,7 +406,8 @@ class LanceDBManager:
             details=f"Found {len(mock_results)} relevant results",
         )
 
-        return mock_results
+        # Final yield with search results
+        yield {"results": mock_results}
 
 
 class PDFProcessor:
@@ -383,64 +415,46 @@ class PDFProcessor:
 
     @staticmethod
     async def extract_pages(file_path: str) -> AsyncGenerator[StreamingProgress, None]:
-        """Extract pages from PDF with streaming progress"""
+        """Extract pages from PDF with streaming progress (MOCK VERSION)"""
         task_id = f"extract_{uuid.uuid4().hex[:8]}"
 
         yield StreamingProgress(
             task_id=task_id,
             progress=0.0,
-            current_step="Opening PDF file",
+            current_step="Opening PDF file (MOCK)",
             step_num=1,
             total_steps=3,
-            details=f"Loading {file_path}",
+            details=f"Mock processing {file_path}",
         )
 
         await asyncio.sleep(0.5)
 
-        # Open PDF
-        try:
-            doc = fitz.open(file_path)
-            total_pages = len(doc)
-        except Exception as e:
-            yield StreamingProgress(
-                task_id=task_id,
-                progress=0.0,
-                current_step="Error opening PDF",
-                step_num=1,
-                total_steps=3,
-                error=str(e),
-            )
-            return [], []
+        # Mock PDF processing - simulate 10 pages
+        total_pages = 10
 
         yield StreamingProgress(
             task_id=task_id,
             progress=20.0,
-            current_step=f"Processing {total_pages} pages",
+            current_step=f"Processing {total_pages} pages (MOCK)",
             step_num=2,
             total_steps=3,
-            details="Extracting images and text",
+            details="Creating mock images and text",
         )
 
         images = []
         metadata = []
 
         for page_num in range(total_pages):
-            page = doc[page_num]
-
-            # Extract image
-            pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))  # 2x zoom
-            img_data = pix.tobytes("png")
-            image = Image.open(io.BytesIO(img_data))
+            # Create mock image
+            image = Image.new("RGB", (800, 600), color=(200, 200, 200))
             images.append(image)
 
-            # Extract text
-            text_content = page.get_text()
-
+            # Create mock metadata
             metadata.append(
                 {
                     "page_num": page_num + 1,
                     "doc_name": Path(file_path).stem,
-                    "text_content": text_content,
+                    "text_content": f"Mock content for page {page_num + 1} from {Path(file_path).name}",
                 }
             )
 
@@ -449,33 +463,32 @@ class PDFProcessor:
             yield StreamingProgress(
                 task_id=task_id,
                 progress=page_progress,
-                current_step=f"Extracted page {page_num + 1}/{total_pages}",
+                current_step=f"Mock extracted page {page_num + 1}/{total_pages}",
                 step_num=2,
                 total_steps=3,
-                details=f"Image: {image.size}, Text: {len(text_content)} chars",
+                details=f"Mock Image: {image.size}, Mock Text: {len(f'Mock content for page {page_num + 1}')} chars",
             )
 
-            await asyncio.sleep(0.1)  # Yield control
-
-        doc.close()
+            await asyncio.sleep(0.1)  # Simulate processing time
 
         yield StreamingProgress(
             task_id=task_id,
             progress=100.0,
-            current_step="PDF extraction complete",
+            current_step="Mock PDF extraction complete",
             step_num=3,
             total_steps=3,
-            details=f"Extracted {len(images)} pages successfully",
+            details=f"Mock extracted {len(images)} pages successfully",
         )
 
-        return images, metadata
+        # Final yield with extracted data
+        yield {"images": images, "metadata": metadata}
 
 
 class ColPaliStreamingServer:
     """Main MCP Server with streaming capabilities"""
 
     def __init__(self):
-        self.server = Server("colpali-streaming")
+        self.server = server.Server("colpali-streaming")
         self.model_manager = ColPaliModelManager()
         self.db_manager = LanceDBManager()
         self.pdf_processor = PDFProcessor()
@@ -618,30 +631,43 @@ class ColPaliStreamingServer:
                     self.latest_progress[task_id] = progress
 
             # Extract PDF pages
-            async for progress in self.pdf_processor.extract_pages(file_path):
-                progress.task_id = task_id
-                self.latest_progress[task_id] = progress
+            extracted_data = None
+            async for progress_or_data in self.pdf_processor.extract_pages(file_path):
+                if isinstance(progress_or_data, StreamingProgress):
+                    progress_or_data.task_id = task_id
+                    self.latest_progress[task_id] = progress_or_data
+                else:
+                    # This is the final data
+                    extracted_data = progress_or_data
 
-            # This would normally return the images/metadata
-            # For demo, we'll use mock data
-            mock_images = [Image.new("RGB", (800, 600)) for _ in range(3)]
-            mock_metadata = [
-                {
-                    "page_num": i + 1,
-                    "doc_name": doc_name,
-                    "text_content": f"Page {i + 1} content",
-                }
-                for i in range(3)
-            ]
+            if not extracted_data:
+                # Use mock data for demo
+                mock_images = [Image.new("RGB", (800, 600)) for _ in range(3)]
+                mock_metadata = [
+                    {
+                        "page_num": i + 1,
+                        "doc_name": doc_name,
+                        "text_content": f"Page {i + 1} content",
+                    }
+                    for i in range(3)
+                ]
+            else:
+                mock_images = extracted_data.get("images", [])
+                mock_metadata = extracted_data.get("metadata", [])
 
             # Encode pages
-            async for progress in self.model_manager.encode_pages(mock_images):
-                progress.task_id = task_id
-                self.latest_progress[task_id] = progress
+            embeddings = None
+            async for progress_or_data in self.model_manager.encode_pages(mock_images):
+                if isinstance(progress_or_data, StreamingProgress):
+                    progress_or_data.task_id = task_id
+                    self.latest_progress[task_id] = progress_or_data
+                else:
+                    # This is the final embeddings
+                    embeddings = progress_or_data.get("embeddings", [])
 
             # Store in database
             async for progress in self.db_manager.store_embeddings(
-                [torch.randn(1, 128) for _ in range(3)], mock_metadata
+                embeddings or [torch.randn(1, 128) for _ in range(3)], mock_metadata
             ):
                 progress.task_id = task_id
                 self.latest_progress[task_id] = progress
@@ -671,33 +697,43 @@ class ColPaliStreamingServer:
 
         try:
             # Encode query
-            async for progress in self.model_manager.encode_query(query):
-                progress.task_id = task_id
-                self.latest_progress[task_id] = progress
+            query_embedding = None
+            async for progress_or_data in self.model_manager.encode_query(query):
+                if isinstance(progress_or_data, StreamingProgress):
+                    progress_or_data.task_id = task_id
+                    self.latest_progress[task_id] = progress_or_data
+                else:
+                    # This is the final query embedding
+                    query_embedding = progress_or_data.get("query_embedding")
 
             # Search database
-            async for progress in self.db_manager.search_embeddings(
-                torch.randn(1, 128), top_k
+            results = None
+            async for progress_or_data in self.db_manager.search_embeddings(
+                query_embedding or torch.randn(1, 128), top_k
             ):
-                progress.task_id = task_id
-                self.latest_progress[task_id] = progress
+                if isinstance(progress_or_data, StreamingProgress):
+                    progress_or_data.task_id = task_id
+                    self.latest_progress[task_id] = progress_or_data
+                else:
+                    # This is the final results
+                    results = progress_or_data.get("results", [])
 
-            # Mock results for demo
-            results = [
+            # Format results for response
+            formatted_results = [
                 {
-                    "page_num": i + 1,
-                    "doc_name": "sample_document.pdf",
-                    "score": 0.95 - i * 0.1,
-                    "snippet": f"Relevant content from page {i + 1}...",
+                    "page_num": result.page_num,
+                    "doc_name": result.doc_name,
+                    "score": result.score,
+                    "snippet": result.snippet,
                 }
-                for i in range(min(top_k, 3))
+                for result in (results or [])
             ]
 
             return {
                 "task_id": task_id,
                 "status": "completed",
-                "results": results,
-                "message": f"Found {len(results)} relevant results",
+                "results": formatted_results,
+                "message": f"Found {len(formatted_results)} relevant results",
             }
 
         except Exception as e:
@@ -736,23 +772,282 @@ class ColPaliStreamingServer:
             ]
         }
 
+    async def run_http_server(self, host: str = "127.0.0.1", port: int = 8080):
+        """Run as HTTP server for remote MCP connections"""
+        try:
+            # Setup tools
+            await self.setup_tools()
+            print("✅ Tools setup completed", file=sys.stderr)
+            
+            # Initialize database
+            await self.db_manager.initialize()
+            print("✅ Database initialized", file=sys.stderr)
+            
+            print(f"🌐 Starting ColPali HTTP MCP server on {host}:{port}", file=sys.stderr)
+            
+            app = web.Application()
+            
+            # Add CORS support
+            cors = aiohttp_cors.setup(app, defaults={
+                "*": aiohttp_cors.ResourceOptions(
+                    allow_credentials=True,
+                    expose_headers="*",
+                    allow_headers="*",
+                    allow_methods="*"
+                )
+            })
+            
+            async def handle_mcp(request):
+                """Handle MCP requests over HTTP"""
+                try:
+                    if request.method == 'POST':
+                        data = await request.json()
+                        
+                        # Handle MCP initialize
+                        if data.get('method') == 'initialize':
+                            return web.json_response({
+                                "jsonrpc": "2.0",
+                                "id": data.get('id'),
+                                "result": {
+                                    "protocolVersion": "2025-06-18",
+                                    "capabilities": {
+                                        "tools": {},
+                                        "logging": {}
+                                    },
+                                    "serverInfo": {
+                                        "name": "colpali-streaming",
+                                        "version": "1.0.0"
+                                    }
+                                }
+                            })
+                        
+                        # Handle tools/list
+                        elif data.get('method') == 'tools/list':
+                            # Get tools from our setup
+                            tools_list = [
+                                {
+                                    "name": "ingest_pdf_stream",
+                                    "description": "Ingest PDF with real-time progress streaming",
+                                    "inputSchema": {
+                                        "type": "object",
+                                        "properties": {
+                                            "file_path": {"type": "string", "description": "Path to PDF file"},
+                                            "doc_name": {"type": "string", "description": "Optional document name"}
+                                        },
+                                        "required": ["file_path"]
+                                    }
+                                },
+                                {
+                                    "name": "search_documents_stream", 
+                                    "description": "Search documents with real-time progress updates",
+                                    "inputSchema": {
+                                        "type": "object",
+                                        "properties": {
+                                            "query": {"type": "string", "description": "Search query text"},
+                                            "top_k": {"type": "integer", "description": "Number of results", "default": 5}
+                                        },
+                                        "required": ["query"]
+                                    }
+                                },
+                                {
+                                    "name": "health_check",
+                                    "description": "Check server health and database status",
+                                    "inputSchema": {"type": "object", "properties": {}}
+                                }
+                            ]
+                            
+                            return web.json_response({
+                                "jsonrpc": "2.0",
+                                "id": data.get('id'),
+                                "result": {"tools": tools_list}
+                            })
+                        
+                        # Handle tools/call
+                        elif data.get('method') == 'tools/call':
+                            params = data.get('params', {})
+                            tool_name = params.get('name')
+                            arguments = params.get('arguments', {})
+                            
+                            # Call the appropriate method
+                            if tool_name == "ingest_pdf_stream":
+                                result = await self.ingest_pdf_stream(**arguments)
+                            elif tool_name == "search_documents_stream":
+                                result = await self.search_documents_stream(**arguments)
+                            elif tool_name == "get_task_progress":
+                                result = await self.get_task_progress(arguments["task_id"])
+                            elif tool_name == "list_active_tasks":
+                                result = await self.list_active_tasks()
+                            elif tool_name == "initialize_colpali":
+                                result = await self.initialize_model_stream()
+                            elif tool_name == "health_check":
+                                result = {
+                                    "status": "healthy",
+                                    "database_path": self.db_manager.db_path,
+                                    "server_info": "ColPali MCP Server v1.0.0"
+                                }
+                            else:
+                                result = {"error": f"Unknown tool: {tool_name}"}
+                            
+                            return web.json_response({
+                                "jsonrpc": "2.0",
+                                "id": data.get('id'),
+                                "result": result
+                            })
+                        
+                        else:
+                            return web.json_response({
+                                "jsonrpc": "2.0",
+                                "id": data.get('id'),
+                                "error": {"code": -32601, "message": "Method not found"}
+                            }, status=404)
+                    
+                    elif request.method == 'GET':
+                        return web.json_response({
+                            "status": "healthy",
+                            "server": "colpali-streaming",
+                            "version": "1.0.0",
+                            "database_path": self.db_manager.db_path,
+                            "endpoints": ["/mcp", "/health"]
+                        })
+                        
+                except Exception as e:
+                    print(f"❌ HTTP request error: {e}", file=sys.stderr)
+                    return web.json_response({
+                        "jsonrpc": "2.0",
+                        "id": data.get('id') if 'data' in locals() else None,
+                        "error": {"code": -32603, "message": str(e)}
+                    }, status=500)
+            
+            # Add routes
+            app.router.add_post('/mcp', handle_mcp)
+            app.router.add_get('/mcp', handle_mcp)
+            app.router.add_get('/health', handle_mcp)
+            
+            # Add CORS to all routes
+            for route in list(app.router.routes()):
+                cors.add(route)
+            
+            print(f"📋 Server endpoints:", file=sys.stderr)
+            print(f"   • POST http://{host}:{port}/mcp - MCP JSON-RPC calls", file=sys.stderr)
+            print(f"   • GET  http://{host}:{port}/health - Health check", file=sys.stderr)
+            print(f"🔧 Available tools:", file=sys.stderr)
+            print(f"   • ingest_pdf_stream", file=sys.stderr)
+            print(f"   • search_documents_stream", file=sys.stderr)
+            print(f"   • get_task_progress", file=sys.stderr)
+            print(f"   • list_active_tasks", file=sys.stderr)
+            print(f"   • initialize_colpali", file=sys.stderr)
+            
+            # Start server
+            runner = web.AppRunner(app)
+            await runner.setup()
+            site = web.TCPSite(runner, host, port)
+            await site.start()
+            
+            print(f"🎉 ColPali HTTP MCP server running on http://{host}:{port}", file=sys.stderr)
+            print(f"🛑 Press Ctrl+C to stop", file=sys.stderr)
+            
+            # Keep server running
+            try:
+                while True:
+                    await asyncio.sleep(1)
+            except KeyboardInterrupt:
+                print(f"\n🛑 Server stopped by user", file=sys.stderr)
+            finally:
+                await runner.cleanup()
+                
+        except Exception as e:
+            print(f"❌ HTTP server error: {e}", file=sys.stderr)
+            raise
+
+    async def run_standalone(self):
+        """Run as standalone server for testing"""
+        try:
+            # Setup tools
+            await self.setup_tools()
+            print("✅ Tools setup completed", file=sys.stderr)
+            
+            # Initialize database
+            await self.db_manager.initialize()
+            print("✅ Database initialized", file=sys.stderr)
+            
+            print("🚀 ColPali server running standalone - press Ctrl+C to stop", file=sys.stderr)
+            print("📝 Available tools:", file=sys.stderr)
+            print("   - ingest_pdf_stream", file=sys.stderr)
+            print("   - search_documents_stream", file=sys.stderr)
+            print("   - get_task_progress", file=sys.stderr)
+            print("   - list_active_tasks", file=sys.stderr)
+            print("   - initialize_colpali", file=sys.stderr)
+            
+            # Keep server running
+            while True:
+                await asyncio.sleep(1)
+                
+        except KeyboardInterrupt:
+            print("\n🛑 Server stopped by user", file=sys.stderr)
+        except Exception as e:
+            print(f"❌ Server error: {e}", file=sys.stderr)
+            raise
+
     async def run(self):
         """Run the MCP server"""
         await self.setup_tools()
         await self.db_manager.initialize()
 
         async with stdio_server() as (read_stream, write_stream):
-            self.logger.info("ColPali MCP Server starting...")
-            await self.server.run(read_stream, write_stream)
+            # Use stderr for logging to avoid breaking MCP JSON protocol
+            import sys
+            print("ColPali MCP Server starting...", file=sys.stderr)
+            await self.server.run(read_stream, write_stream, {})
 
 
 async def main():
     """Main entry point"""
-    server = ColPaliStreamingServer()
-    await server.run()
+    import sys
+    
+    # Parse command line arguments
+    if len(sys.argv) > 1:
+        if sys.argv[1] == "--standalone":
+            print("🔧 Starting ColPali server in standalone mode...", file=sys.stderr)
+            server_instance = ColPaliStreamingServer()
+            await server_instance.run_standalone()
+        elif sys.argv[1] == "--http":
+            # Default HTTP server
+            host = "127.0.0.1"
+            port = 8080
+            
+            # Parse optional host and port
+            if len(sys.argv) > 2:
+                try:
+                    if ":" in sys.argv[2]:
+                        host, port_str = sys.argv[2].split(":")
+                        port = int(port_str)
+                    else:
+                        port = int(sys.argv[2])
+                except ValueError:
+                    print(f"❌ Invalid port: {sys.argv[2]}", file=sys.stderr)
+                    sys.exit(1)
+            
+            if len(sys.argv) > 3:
+                host = sys.argv[3]
+            
+            print(f"🌐 Starting ColPali HTTP server on {host}:{port}...", file=sys.stderr)
+            server_instance = ColPaliStreamingServer()
+            await server_instance.run_http_server(host, port)
+        else:
+            print(f"❌ Unknown argument: {sys.argv[1]}", file=sys.stderr)
+            print("Usage:", file=sys.stderr)
+            print("  python colpali_streaming_server.py                    # MCP stdio mode", file=sys.stderr)
+            print("  python colpali_streaming_server.py --standalone       # Standalone mode", file=sys.stderr)
+            print("  python colpali_streaming_server.py --http [port] [host] # HTTP server mode", file=sys.stderr)
+            print("  python colpali_streaming_server.py --http 8080 0.0.0.0  # HTTP on all interfaces", file=sys.stderr)
+            sys.exit(1)
+    else:
+        print("🔧 Starting ColPali server in MCP stdio mode...", file=sys.stderr)
+        server_instance = ColPaliStreamingServer()
+        await server_instance.run()
 
 
 if __name__ == "__main__":
-    import io  # Add missing import
+    import sys  # Add missing import
 
     asyncio.run(main())

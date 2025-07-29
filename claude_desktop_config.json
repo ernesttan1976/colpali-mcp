@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "colpali": {
+      "command": "node",
+      "args": [
+        "/Volumes/myssd/colpali-mcp/mcp_proxy.js"
+      ],
+      "env": {
+        "COLPALI_SERVER_URL": "http://localhost:8000"
+      },
+      "disabled": false
+    }
+  }
+}

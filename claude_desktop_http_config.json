@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "colpali-http": {
+      "command": "node",
+      "args": ["/Volumes/myssd/colpali-mcp/mcp_bridge.js"],
+      "env": {
+        "COLPALI_SERVER_URL": "http://127.0.0.1:8080/mcp",
+        "COLPALI_DB_PATH": "/Volumes/myssd/colpali-mcp/data/embeddings_db"
+      }
+    }
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "name": "colpali-mcp-proxy",
+  "version": "1.0.0",
+  "description": "MCP proxy for ColPali FastMCP HTTP server",
+  "type": "module",
+  "main": "mcp_proxy.js",
+  "scripts": {
+    "start": "node mcp_proxy.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.17.0"
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "colpali-http": {
+      "command": "curl",
+      "args": [
+        "-X", "POST",
+        "-H", "Content-Type: application/json",
+        "-d", "@-",
+        "http://127.0.0.1:8080/mcp"
+      ],
+      "env": {
+        "COLPALI_DB_PATH": "/Volumes/myssd/colpali-mcp/data/embeddings_db"
+      }
+    }
+  }
+}
