@@ -11,7 +11,10 @@ fi
 
 # Check if Python 3.9+ is available
 python_version=$(python3 --version 2>&1 | awk '{print $2}' | cut -d. -f1,2)
-if [[ $(echo "$python_version >= 3.9" | bc -l) -ne 1 ]]; then
+python_major=$(echo $python_version | cut -d. -f1)
+python_minor=$(echo $python_version | cut -d. -f2)
+
+if [[ $python_major -lt 3 ]] || [[ $python_major -eq 3 && $python_minor -lt 9 ]]; then
     echo "❌ Python 3.9+ required, found $python_version"
     exit 1
 fi
