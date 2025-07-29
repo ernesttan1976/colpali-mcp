@@ -128,16 +128,19 @@ def test_embedding_generation(model, processor, images):
             print(f"📊 Batch input shape: {batch_doc['pixel_values'].shape}")
             
             # Generate embedding
-            embedding = model(**batch_doc)
-            print(f"📊 Embedding shape: {embedding.shape}")
-            print(f"📊 Embedding dtype: {embedding.dtype}")
+            batch_embeddings = model(**batch_doc)
+            print(f"📊 Batch embedding shape: {batch_embeddings.shape}")
+            print(f"📊 Batch embedding dtype: {batch_embeddings.dtype}")
             
-            # Move to CPU
-            embedding_cpu = embedding.to("cpu")
+            # Unbind to get individual embeddings (like in the main app)
+            embedding_list = list(torch.unbind(batch_embeddings.to("cpu")))
+            embedding = embedding_list[0]  # Get the first (and only) embedding
+            
+            print(f"📊 Final embedding shape: {embedding.shape}")
             print(f"✅ Embedding generated successfully")
             print(f"📊 Memory after embedding: {get_memory_usage():.2f}GB")
             
-        return True, embedding_cpu
+        return True, embedding
         
     except Exception as e:
         print(f"❌ Embedding generation failed: {e}")
@@ -169,9 +172,9 @@ def test_query_processing(model, processor, embedding):
             print(f"📊 Document embedding shape: {embedding.shape}")
             
             # Fix the tensor dimensions for scoring
-            # Query embedding needs to be unbinded into list
+            # Both query and document embeddings need to be unbinded
             query_list = list(torch.unbind(query_embedding_cpu))
-            doc_list = [embedding]  # Document embedding as list
+            doc_list = [embedding]  # Document embedding is already 2D
             
             print(f"📊 Query list length: {len(query_list)}")
             print(f"📊 Query item shape: {query_list[0].shape}")

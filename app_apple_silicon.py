@@ -237,6 +237,7 @@ class AppleSiliconColPali:
             query_list = list(torch.unbind(query_embedding_cpu))
             
         # Score against document embeddings
+        # Embeddings from _process_image_batch are already 2D tensors
         scores = self.processor.score(query_list, embeddings, device="cpu")
         
         # Get top k results
