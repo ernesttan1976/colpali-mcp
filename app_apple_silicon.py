@@ -46,12 +46,12 @@ from image_cache import convert_files
 # Initialize database
 print("🗄️ Initializing Apple Silicon database...")
 os.makedirs("./data/embeddings_db", exist_ok=True)
-db = AppleSiliconEmbeddingDB(db_path="./data/embeddings_db", max_memory_gb=8.0)
+db = AppleSiliconEmbeddingDB(db_path="./data/embeddings_db", max_memory_gb=3.5)
 
 class AppleSiliconColPali:
     """Apple Silicon optimized ColPali implementation"""
     
-    def __init__(self, max_memory_gb=8.0):
+    def __init__(self, max_memory_gb=3.5):
         self.max_memory_gb = max_memory_gb
         self.model = None
         self.processor = None
@@ -68,7 +68,7 @@ class AppleSiliconColPali:
             print("⚠️  MPS not available, using CPU (will be slower)")
             
         print(f"🎯 Target device: {self.device}")
-        print(f"💾 Memory limit: {self.max_memory_gb}GB")
+        print(f"💾 Memory limit: {self.max_memory_gb}GB (STRICT)")
         
     def _optimize_model_for_memory(self):
         """Apply memory optimizations for Apple Silicon"""
@@ -90,12 +90,12 @@ class AppleSiliconColPali:
         print("📥 Loading ColQwen2 model for Apple Silicon...")
         
         # Check memory before loading
-        if not check_memory_limit(self.max_memory_gb - 3):  # Reserve 3GB for model
+        if not check_memory_limit(self.max_memory_gb - 2.5):  # Reserve 2.5GB for model
             print("❌ Insufficient memory to load model")
             return False
             
         try:
-            # Load with memory optimizations
+            # Load with aggressive memory optimizations
             print("🔄 Loading model...")
             self.model = ColQwen2.from_pretrained(
                 "vidore/colqwen2-v1.0",
@@ -103,6 +103,7 @@ class AppleSiliconColPali:
                 device_map=self.device,
                 trust_remote_code=True,
                 low_cpu_mem_usage=True,  # Minimize CPU memory usage
+                max_memory={self.device: "2GB"},  # Strict GPU memory limit
             )
             
             # Apply memory optimizations
@@ -160,17 +161,17 @@ class AppleSiliconColPali:
             print(f"🔄 Processing batch {i//batch_size + 1}/{total_batches}")
             
             # Check memory before processing batch
-            if not check_memory_limit(self.max_memory_gb - 1):  # Reserve 1GB buffer
+            if not check_memory_limit(self.max_memory_gb - 0.5):  # Reserve 0.5GB buffer
                 print("⚠️  Memory limit reached, reducing batch size")
-                batch_size = max(1, batch_size // 2)
-                batch_images = batch_images[:batch_size]
+                batch_size = 1  # Force single image processing
+                batch_images = batch_images[:1]
             
             # Process batch
             batch_embeddings = self._process_image_batch(batch_images)
             embeddings.extend(batch_embeddings)
             
-            # Force garbage collection
-            if i % (batch_size * 4) == 0:  # Every 4 batches
+            # Force garbage collection every image for 3.5GB limit
+            if i % batch_size == 0:  # After every batch
                 gc.collect()
                 if self.device == "mps":
                     torch.mps.empty_cache()
@@ -257,16 +258,16 @@ def test_apple_silicon_colpali():
         return False
         
     try:
-        # Initialize ColPali
-        colpali = AppleSiliconColPali(max_memory_gb=8.0)
+        # Initialize ColPali with 3.5GB limit
+        colpali = AppleSiliconColPali(max_memory_gb=3.5)
         
         # Load model
         if not colpali.load_model():
             print("❌ Failed to load model")
             return False
             
-        # Process PDF
-        embeddings, images = colpali.process_pdf_batch(test_pdf, batch_size=2)
+        # Process PDF with smaller batch size for 3.5GB limit
+        embeddings, images = colpali.process_pdf_batch(test_pdf, batch_size=1)
         
         # Test search
         test_queries = [

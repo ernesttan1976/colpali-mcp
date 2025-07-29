@@ -19,7 +19,7 @@ class AppleSiliconEmbeddingDB:
     Uses direct file storage to avoid PyArrow/LanceDB memory overhead
     """
     
-    def __init__(self, db_path: str = "./data/embeddings_db", max_memory_gb: float = 8.0):
+    def __init__(self, db_path: str = "./data/embeddings_db", max_memory_gb: float = 3.5):
         """Initialize the database with memory constraints"""
         self.db_path = Path(db_path)
         self.max_memory_gb = max_memory_gb
@@ -68,7 +68,7 @@ class AppleSiliconEmbeddingDB:
     def save_embeddings(self, filename: str, embeddings: List[torch.Tensor], page_count: int) -> bool:
         """Save embeddings with memory optimization"""
         try:
-            if not self._check_memory_limit(2.0):  # Need 2GB buffer for saving
+            if not self._check_memory_limit(1.0):  # Need 1GB buffer for saving
                 print("⚠️  Insufficient memory to save embeddings")
                 return False
                 
@@ -90,8 +90,8 @@ class AppleSiliconEmbeddingDB:
             with open(doc_dir / "metadata.json", 'w') as f:
                 json.dump(metadata, f, indent=2)
                 
-            # Save embeddings in chunks to manage memory
-            chunk_size = 50  # Process 50 embeddings at a time
+            # Save embeddings in smaller chunks for 3.5GB limit
+            chunk_size = 25  # Process 25 embeddings at a time
             for i in range(0, len(embeddings), chunk_size):
                 chunk = embeddings[i:i + chunk_size]
                 
@@ -110,8 +110,8 @@ class AppleSiliconEmbeddingDB:
                     embedding_file = doc_dir / f"embedding_{idx:04d}.npy"
                     np.save(embedding_file, embedding_np)
                 
-                # Cleanup after each chunk
-                if i % (chunk_size * 2) == 0:  # Every 100 embeddings
+                # Cleanup after each chunk (more aggressive for 3.5GB)
+                if i % chunk_size == 0:  # Every chunk
                     gc.collect()
                     if torch.backends.mps.is_available():
                         torch.mps.empty_cache()
@@ -149,7 +149,7 @@ class AppleSiliconEmbeddingDB:
             print(f"📥 Loading {embedding_count} embeddings for {metadata['filename']}")
             
             # Check memory before loading
-            if not self._check_memory_limit(3.0):
+            if not self._check_memory_limit(1.5):
                 print("⚠️  Insufficient memory to load embeddings")
                 return None
                 
@@ -162,9 +162,9 @@ class AppleSiliconEmbeddingDB:
             else:
                 target_dtype = torch.float32
                 
-            # Load embeddings in chunks to manage memory
+            # Load embeddings in smaller chunks for 3.5GB limit
             embeddings = []
-            chunk_size = 50  # Load 50 at a time
+            chunk_size = 25  # Load 25 at a time
             
             for i in range(0, embedding_count, chunk_size):
                 chunk_embeddings = []
@@ -191,8 +191,8 @@ class AppleSiliconEmbeddingDB:
                     
                 embeddings.extend(chunk_embeddings)
                 
-                # Cleanup after each chunk
-                if i % (chunk_size * 2) == 0:  # Every 100 embeddings
+                # Cleanup after each chunk (more aggressive for 3.5GB)
+                if i % chunk_size == 0:  # Every chunk
                     gc.collect()
                     
             if len(embeddings) != embedding_count:

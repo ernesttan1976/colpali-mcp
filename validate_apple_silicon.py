@@ -158,13 +158,13 @@ def check_memory():
         else:
             print("   ✅ Sufficient total memory")
         
-        if available_memory < 8:
-            print("   ⚠️  Less than 8GB available memory")
+        if available_memory < 3.5:
+            print("   ⚠️  Less than 3.5GB available memory")
             print("   💡 Close other applications for best performance")
         else:
             print("   ✅ Sufficient available memory")
             
-        return available_memory >= 6  # Minimum 6GB required
+        return available_memory >= 3  # Minimum 3GB required for 3.5GB limit
         
     except ImportError:
         print("   ❌ Cannot check memory (psutil not available)")
