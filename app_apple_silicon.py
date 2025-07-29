@@ -231,10 +231,13 @@ class AppleSiliconColPali:
         with torch.no_grad():
             batch_query = self.processor.process_queries([query]).to(self.device)
             query_embedding = self.model(**batch_query)
-            query_embedding = query_embedding.to("cpu")
+            query_embedding_cpu = query_embedding.to("cpu")
+            
+            # Convert to proper format for scoring
+            query_list = list(torch.unbind(query_embedding_cpu))
             
         # Score against document embeddings
-        scores = self.processor.score([query_embedding], embeddings, device="cpu")
+        scores = self.processor.score(query_list, embeddings, device="cpu")
         
         # Get top k results
         top_k_indices = scores[0].topk(k).indices.tolist()

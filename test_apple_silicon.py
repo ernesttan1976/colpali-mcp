@@ -166,9 +166,20 @@ def test_query_processing(model, processor, embedding):
             query_embedding_cpu = query_embedding.to("cpu")
             
             print(f"📊 Query embedding shape: {query_embedding_cpu.shape}")
+            print(f"📊 Document embedding shape: {embedding.shape}")
             
-            # Test scoring
-            score = processor.score([query_embedding_cpu], [embedding], device="cpu")
+            # Fix the tensor dimensions for scoring
+            # Query embedding needs to be unbinded into list
+            query_list = list(torch.unbind(query_embedding_cpu))
+            doc_list = [embedding]  # Document embedding as list
+            
+            print(f"📊 Query list length: {len(query_list)}")
+            print(f"📊 Query item shape: {query_list[0].shape}")
+            print(f"📊 Doc list length: {len(doc_list)}")
+            print(f"📊 Doc item shape: {doc_list[0].shape}")
+            
+            # Test scoring with proper format
+            score = processor.score(query_list, doc_list, device="cpu")
             print(f"📊 Similarity score: {score[0].item():.4f}")
             
             print("✅ Query processing successful")
