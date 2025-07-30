@@ -784,261 +784,255 @@ class ColPaliHTTPServer:
                 self.logger.error(f"Failed to read log file: {str(e)}")
                 return {"logs": [], "error": "Failed to read server logs"}
 
-        async def start_server(self, host: str = "localhost", port: int = 8000):
-            """Start the HTTP server"""
-            try:
-                await self.db_manager.initialize()
-                self.logger.info(f"LanceDB initialized at: {self.db_manager.db_path}")
+    async def start_server(self, host: str = "localhost", port: int = 8000):
+        """Start the HTTP server"""
+        try:
+            await self.db_manager.initialize()
+            self.logger.info(f"LanceDB initialized at: {self.db_manager.db_path}")
 
-                self.logger.info(f"🚀 Starting ColPali HTTP Server on {host}:{port}")
-                self.logger.info(
-                    f"📊 Server health endpoint: http://{host}:{port}/health"
-                )
-                self.logger.info(f"📝 Server logs being written to: colpali_server.log")
+            self.logger.info(f"🚀 Starting ColPali HTTP Server on {host}:{port}")
+            self.logger.info(f"📊 Server health endpoint: http://{host}:{port}/health")
+            self.logger.info(f"📝 Server logs being written to: colpali_server.log")
 
-                config = uvicorn.Config(
-                    self.app,
-                    host=host,
-                    port=port,
-                    log_level="info",
-                    access_log=True,
-                )
-                server = uvicorn.Server(config)
-                await server.serve()
+            config = uvicorn.Config(
+                self.app,
+                host=host,
+                port=port,
+                log_level="info",
+                access_log=True,
+            )
+            server = uvicorn.Server(config)
+            await server.serve()
 
-            except Exception as e:
-                self.logger.error(f"Failed to start server: {str(e)}", exc_info=True)
-                raise
+        except Exception as e:
+            self.logger.error(f"Failed to start server: {str(e)}", exc_info=True)
+            raise
 
-        async def process_pdf_background(
-            self, task_id: str, temp_file_path: str, actual_doc_name: str
-        ):
-            """Background processing of PDF with real-time progress updates"""
-            try:
-                # Ensure model is loaded
-                if not self.model_manager.model_loaded:
-                    self.logger.info(
-                        f"Task {task_id}: Model not loaded, initializing..."
-                    )
-                    async for progress in self.model_manager.load_model():
-                        progress.task_id = task_id
-                        progress.step_num = 2
-                        progress.total_steps = 6
-                        self.latest_progress[task_id] = progress
-                        self.logger.info(
-                            f"Task {task_id}: Model loading - {progress.current_step} ({progress.progress:.1f}%)"
-                        )
-                        await asyncio.sleep(0.1)  # Allow other tasks to run
-
-                # Extract PDF pages
-                self.logger.info(f"Task {task_id}: Starting PDF page extraction")
-                images = []
-                metadata = []
-                async for progress in self.pdf_processor.extract_pages(temp_file_path):
-                    progress.task_id = task_id
-                    progress.step_num = 3
-                    progress.total_steps = 6
-                    # Adjust progress to fit within step 3's range (20-40%)
-                    progress.progress = 20.0 + (progress.progress / 100.0) * 20.0
-                    self.latest_progress[task_id] = progress
-                    self.logger.info(
-                        f"Task {task_id}: PDF extraction - {progress.current_step} ({progress.progress:.1f}%)"
-                    )
-                    await asyncio.sleep(0.1)
-
-                # Mock data for demo - replace with actual extracted data
-                images = [Image.new("RGB", (800, 600)) for _ in range(3)]
-                metadata = [
-                    {
-                        "page_num": i + 1,
-                        "doc_name": actual_doc_name,
-                        "text_content": f"Page {i + 1} content",
-                    }
-                    for i in range(3)
-                ]
-                self.logger.info(f"Task {task_id}: Extracted {len(images)} pages")
-
-                # Encode pages
-                self.logger.info(
-                    f"Task {task_id}: Starting ColPali encoding for {len(images)} pages"
-                )
-                embeddings = []
-                async for progress in self.model_manager.encode_pages(images):
-                    progress.task_id = task_id
-                    progress.step_num = 4
-                    progress.total_steps = 6
-                    # Adjust progress to fit within step 4's range (40-70%)
-                    progress.progress = 40.0 + (progress.progress / 100.0) * 30.0
-                    self.latest_progress[task_id] = progress
-                    self.logger.info(
-                        f"Task {task_id}: Encoding - {progress.current_step} ({progress.progress:.1f}%)"
-                    )
-                    if progress.throughput:
-                        self.logger.info(
-                            f"Task {task_id}: Encoding throughput: {progress.throughput}"
-                        )
-                    await asyncio.sleep(0.1)
-
-                embeddings = [torch.randn(1, 128) for _ in range(len(images))]
-                self.logger.info(
-                    f"Task {task_id}: Generated {len(embeddings)} embeddings"
-                )
-
-                # Store in database
-                self.logger.info(f"Task {task_id}: Storing embeddings in LanceDB")
-                async for progress in self.db_manager.store_embeddings(
-                    embeddings, metadata
-                ):
-                    progress.task_id = task_id
-                    progress.step_num = 5
-                    progress.total_steps = 6
-                    # Adjust progress to fit within step 5's range (70-95%)
-                    progress.progress = 70.0 + (progress.progress / 100.0) * 25.0
-                    self.latest_progress[task_id] = progress
-                    self.logger.info(
-                        f"Task {task_id}: Storage - {progress.current_step} ({progress.progress:.1f}%)"
-                    )
-                    await asyncio.sleep(0.1)
-
-                # Final completion
-                final_progress = StreamingProgress(
-                    task_id=task_id,
-                    progress=100.0,
-                    current_step="Ingestion completed successfully",
-                    step_num=6,
-                    total_steps=6,
-                    details=f"Document '{actual_doc_name}' ready for search",
-                    throughput=f"{len(images)} pages processed",
-                )
-                self.latest_progress[task_id] = final_progress
-                self.logger.info(
-                    f"Task {task_id}: COMPLETED - {len(images)} pages indexed for document '{actual_doc_name}'"
-                )
-
-            except Exception as e:
-                self.logger.error(
-                    f"Task {task_id}: FAILED during processing - {str(e)}",
-                    exc_info=True,
-                )
-                error_progress = StreamingProgress(
-                    task_id=task_id,
-                    progress=0.0,
-                    current_step="Processing failed",
-                    step_num=0,
-                    total_steps=1,
-                    error=str(e),
-                )
-                self.latest_progress[task_id] = error_progress
-            finally:
-                # Clean up temporary file
-                try:
-                    Path(temp_file_path).unlink(missing_ok=True)
-                    self.logger.info(
-                        f"Task {task_id}: Cleaned up temporary file {temp_file_path}"
-                    )
-                except Exception as cleanup_error:
-                    self.logger.warning(
-                        f"Task {task_id}: Failed to cleanup temp file: {cleanup_error}"
-                    )
-
-        async def process_search_background(self, task_id: str, request: SearchRequest):
-            """Background processing of search with real-time progress updates"""
-            try:
-                # Check if we have any documents indexed
-                if not hasattr(self, "db_manager") or self.db_manager.table is None:
-                    error_progress = StreamingProgress(
-                        task_id=task_id,
-                        progress=0.0,
-                        current_step="No documents available",
-                        step_num=0,
-                        total_steps=1,
-                        error="No documents have been indexed yet. Please ingest documents first.",
-                    )
-                    self.latest_progress[task_id] = error_progress
-                    return
-
-                # Encode query
-                self.logger.info(f"Task {task_id}: Encoding search query")
-                query_embedding = None
-                async for progress in self.model_manager.encode_query(request.query):
+    async def process_pdf_background(
+        self, task_id: str, temp_file_path: str, actual_doc_name: str
+    ):
+        """Background processing of PDF with real-time progress updates"""
+        try:
+            # Ensure model is loaded
+            if not self.model_manager.model_loaded:
+                self.logger.info(f"Task {task_id}: Model not loaded, initializing...")
+                async for progress in self.model_manager.load_model():
                     progress.task_id = task_id
                     progress.step_num = 2
-                    progress.total_steps = 4
-                    progress.progress = 5.0 + (progress.progress / 100.0) * 45.0
+                    progress.total_steps = 6
                     self.latest_progress[task_id] = progress
                     self.logger.info(
-                        f"Task {task_id}: Query encoding - {progress.current_step} ({progress.progress:.1f}%)"
+                        f"Task {task_id}: Model loading - {progress.current_step} ({progress.progress:.1f}%)"
                     )
-                    await asyncio.sleep(0.1)
+                    await asyncio.sleep(0.1)  # Allow other tasks to run
 
-                # Set query_embedding (mock for now, replace with actual)
-                query_embedding = torch.randn(1, 128)
-
-                # Search database
-                self.logger.info(f"Task {task_id}: Performing vector similarity search")
-                search_results = None
-                async for progress in self.db_manager.search_embeddings(
-                    query_embedding, request.top_k
-                ):
-                    progress.task_id = task_id
-                    progress.step_num = 3
-                    progress.total_steps = 4
-                    progress.progress = 50.0 + (progress.progress / 100.0) * 40.0
-                    self.latest_progress[task_id] = progress
-                    self.logger.info(
-                        f"Task {task_id}: Vector search - {progress.current_step} ({progress.progress:.1f}%)"
-                    )
-
-                    # Capture results from the final progress update
-                    if progress.progress >= 100.0 and hasattr(progress, "results"):
-                        search_results = progress.results
-                    await asyncio.sleep(0.1)
-
-                # Convert SearchResult objects to dictionaries
-                results = []
-                if search_results:
-                    for result in search_results:
-                        if hasattr(result, "__dict__"):
-                            # SearchResult object
-                            results.append(
-                                {
-                                    "page_num": result.page_num,
-                                    "doc_name": result.doc_name,
-                                    "score": result.score,
-                                    "snippet": result.snippet,
-                                }
-                            )
-                        else:
-                            # Already a dict
-                            results.append(result)
-
-                # Final completion
-                final_progress = StreamingProgress(
-                    task_id=task_id,
-                    progress=100.0,
-                    current_step="Search completed",
-                    step_num=4,
-                    total_steps=4,
-                    details=f"Found {len(results)} relevant matches",
-                    results=results,  # Store actual results
-                )
-                self.latest_progress[task_id] = final_progress
-
+            # Extract PDF pages
+            self.logger.info(f"Task {task_id}: Starting PDF page extraction")
+            images = []
+            metadata = []
+            async for progress in self.pdf_processor.extract_pages(temp_file_path):
+                progress.task_id = task_id
+                progress.step_num = 3
+                progress.total_steps = 6
+                # Adjust progress to fit within step 3's range (20-40%)
+                progress.progress = 20.0 + (progress.progress / 100.0) * 20.0
+                self.latest_progress[task_id] = progress
                 self.logger.info(
-                    f"Task {task_id}: COMPLETED - Found {len(results)} results for query '{request.query}'"
+                    f"Task {task_id}: PDF extraction - {progress.current_step} ({progress.progress:.1f}%)"
+                )
+                await asyncio.sleep(0.1)
+
+            # Mock data for demo - replace with actual extracted data
+            images = [Image.new("RGB", (800, 600)) for _ in range(3)]
+            metadata = [
+                {
+                    "page_num": i + 1,
+                    "doc_name": actual_doc_name,
+                    "text_content": f"Page {i + 1} content",
+                }
+                for i in range(3)
+            ]
+            self.logger.info(f"Task {task_id}: Extracted {len(images)} pages")
+
+            # Encode pages
+            self.logger.info(
+                f"Task {task_id}: Starting ColPali encoding for {len(images)} pages"
+            )
+            embeddings = []
+            async for progress in self.model_manager.encode_pages(images):
+                progress.task_id = task_id
+                progress.step_num = 4
+                progress.total_steps = 6
+                # Adjust progress to fit within step 4's range (40-70%)
+                progress.progress = 40.0 + (progress.progress / 100.0) * 30.0
+                self.latest_progress[task_id] = progress
+                self.logger.info(
+                    f"Task {task_id}: Encoding - {progress.current_step} ({progress.progress:.1f}%)"
+                )
+                if progress.throughput:
+                    self.logger.info(
+                        f"Task {task_id}: Encoding throughput: {progress.throughput}"
+                    )
+                await asyncio.sleep(0.1)
+
+            embeddings = [torch.randn(1, 128) for _ in range(len(images))]
+            self.logger.info(f"Task {task_id}: Generated {len(embeddings)} embeddings")
+
+            # Store in database
+            self.logger.info(f"Task {task_id}: Storing embeddings in LanceDB")
+            async for progress in self.db_manager.store_embeddings(
+                embeddings, metadata
+            ):
+                progress.task_id = task_id
+                progress.step_num = 5
+                progress.total_steps = 6
+                # Adjust progress to fit within step 5's range (70-95%)
+                progress.progress = 70.0 + (progress.progress / 100.0) * 25.0
+                self.latest_progress[task_id] = progress
+                self.logger.info(
+                    f"Task {task_id}: Storage - {progress.current_step} ({progress.progress:.1f}%)"
+                )
+                await asyncio.sleep(0.1)
+
+            # Final completion
+            final_progress = StreamingProgress(
+                task_id=task_id,
+                progress=100.0,
+                current_step="Ingestion completed successfully",
+                step_num=6,
+                total_steps=6,
+                details=f"Document '{actual_doc_name}' ready for search",
+                throughput=f"{len(images)} pages processed",
+            )
+            self.latest_progress[task_id] = final_progress
+            self.logger.info(
+                f"Task {task_id}: COMPLETED - {len(images)} pages indexed for document '{actual_doc_name}'"
+            )
+
+        except Exception as e:
+            self.logger.error(
+                f"Task {task_id}: FAILED during processing - {str(e)}",
+                exc_info=True,
+            )
+            error_progress = StreamingProgress(
+                task_id=task_id,
+                progress=0.0,
+                current_step="Processing failed",
+                step_num=0,
+                total_steps=1,
+                error=str(e),
+            )
+            self.latest_progress[task_id] = error_progress
+        finally:
+            # Clean up temporary file
+            try:
+                Path(temp_file_path).unlink(missing_ok=True)
+                self.logger.info(
+                    f"Task {task_id}: Cleaned up temporary file {temp_file_path}"
+                )
+            except Exception as cleanup_error:
+                self.logger.warning(
+                    f"Task {task_id}: Failed to cleanup temp file: {cleanup_error}"
                 )
 
-            except Exception as e:
-                self.logger.error(f"Task {task_id}: FAILED - {str(e)}", exc_info=True)
+    async def process_search_background(self, task_id: str, request: SearchRequest):
+        """Background processing of search with real-time progress updates"""
+        try:
+            # Check if we have any documents indexed
+            if not hasattr(self, "db_manager") or self.db_manager.table is None:
                 error_progress = StreamingProgress(
                     task_id=task_id,
                     progress=0.0,
-                    current_step="Search failed",
+                    current_step="No documents available",
                     step_num=0,
                     total_steps=1,
-                    error=str(e),
+                    error="No documents have been indexed yet. Please ingest documents first.",
                 )
                 self.latest_progress[task_id] = error_progress
+                return
+
+            # Encode query
+            self.logger.info(f"Task {task_id}: Encoding search query")
+            query_embedding = None
+            async for progress in self.model_manager.encode_query(request.query):
+                progress.task_id = task_id
+                progress.step_num = 2
+                progress.total_steps = 4
+                progress.progress = 5.0 + (progress.progress / 100.0) * 45.0
+                self.latest_progress[task_id] = progress
+                self.logger.info(
+                    f"Task {task_id}: Query encoding - {progress.current_step} ({progress.progress:.1f}%)"
+                )
+                await asyncio.sleep(0.1)
+
+            # Set query_embedding (mock for now, replace with actual)
+            query_embedding = torch.randn(1, 128)
+
+            # Search database
+            self.logger.info(f"Task {task_id}: Performing vector similarity search")
+            search_results = None
+            async for progress in self.db_manager.search_embeddings(
+                query_embedding, request.top_k
+            ):
+                progress.task_id = task_id
+                progress.step_num = 3
+                progress.total_steps = 4
+                progress.progress = 50.0 + (progress.progress / 100.0) * 40.0
+                self.latest_progress[task_id] = progress
+                self.logger.info(
+                    f"Task {task_id}: Vector search - {progress.current_step} ({progress.progress:.1f}%)"
+                )
+
+                # Capture results from the final progress update
+                if progress.progress >= 100.0 and hasattr(progress, "results"):
+                    search_results = progress.results
+                await asyncio.sleep(0.1)
+
+            # Convert SearchResult objects to dictionaries
+            results = []
+            if search_results:
+                for result in search_results:
+                    if hasattr(result, "__dict__"):
+                        # SearchResult object
+                        results.append(
+                            {
+                                "page_num": result.page_num,
+                                "doc_name": result.doc_name,
+                                "score": result.score,
+                                "snippet": result.snippet,
+                            }
+                        )
+                    else:
+                        # Already a dict
+                        results.append(result)
+
+            # Final completion
+            final_progress = StreamingProgress(
+                task_id=task_id,
+                progress=100.0,
+                current_step="Search completed",
+                step_num=4,
+                total_steps=4,
+                details=f"Found {len(results)} relevant matches",
+                results=results,  # Store actual results
+            )
+            self.latest_progress[task_id] = final_progress
+
+            self.logger.info(
+                f"Task {task_id}: COMPLETED - Found {len(results)} results for query '{request.query}'"
+            )
+
+        except Exception as e:
+            self.logger.error(f"Task {task_id}: FAILED - {str(e)}", exc_info=True)
+            error_progress = StreamingProgress(
+                task_id=task_id,
+                progress=0.0,
+                current_step="Search failed",
+                step_num=0,
+                total_steps=1,
+                error=str(e),
+            )
+            self.latest_progress[task_id] = error_progress
 
 
 # Global server instance
