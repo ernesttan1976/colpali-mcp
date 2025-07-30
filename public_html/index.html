@@ -1053,7 +1053,7 @@
                 }
 
                 this.setButtonLoading('ingestBtn', 'ingestBtnText', 'ingestSpinner', true);
-                this.showProgress('ingestProgress', 0, 'Uploading and processing document...');
+                this.showProgress('ingestProgress', 0, 'Starting document processing...');
                 
                 // Add logs container
                 this.showLogsContainer('ingestStatus');
@@ -1071,19 +1071,23 @@
                     }
 
                     const result = await response.json();
-                    this.addLogEntry('ingestStatus', `Task ID: ${result.task_id}`, 'info');
+                    this.addLogEntry('ingestStatus', `Task ID: ${result.task_id} - Status: ${result.status}`, 'info');
                     
                     // Start real-time progress tracking
-                    await this.trackProgressRealTime(result.task_id, 'ingest');
+                    const trackingResult = await this.trackProgressRealTime(result.task_id, 'ingest');
                     
-                    this.addLogEntry('ingestStatus', `✅ Document "${docName}" processed successfully (${result.pages_processed} pages indexed)`, 'success');
-                    this.showStatus('ingestStatus', `Document "${docName}" processed successfully (${result.pages_processed} pages indexed)`, 'success');
-                    
-                    // Refresh documents list and clear form
-                    setTimeout(() => {
-                        this.loadDocuments();
-                        this.clearIngestForm();
-                    }, 1000);
+                    if (trackingResult.success) {
+                        this.addLogEntry('ingestStatus', `✅ Document "${docName}" processed successfully`, 'success');
+                        this.showStatus('ingestStatus', `Document "${docName}" processed successfully`, 'success');
+                        
+                        // Refresh documents list and clear form
+                        setTimeout(() => {
+                            this.loadDocuments();
+                            this.clearIngestForm();
+                        }, 1000);
+                    } else {
+                        throw new Error(trackingResult.error || 'Processing failed');
+                    }
                     
                 } catch (error) {
                     console.error('Ingestion error:', error);
@@ -1113,7 +1117,7 @@
                 }
 
                 this.setButtonLoading('searchBtn', 'searchBtnText', 'searchSpinner', true);
-                this.showProgress('searchProgress', 0, 'Processing search query...');
+                this.showProgress('searchProgress', 0, 'Starting search...');
                 
                 // Add logs container
                 this.showLogsContainer('searchStatus');
@@ -1137,14 +1141,19 @@
                     }
 
                     const result = await response.json();
-                    this.addLogEntry('searchStatus', `Task ID: ${result.task_id}`, 'info');
+                    this.addLogEntry('searchStatus', `Task ID: ${result.task_id} - Status: ${result.status}`, 'info');
                     
                     // Start real-time progress tracking
-                    await this.trackProgressRealTime(result.task_id, 'search');
+                    const trackingResult = await this.trackProgressRealTime(result.task_id, 'search');
                     
-                    this.displayResults(result.results);
-                    this.addLogEntry('searchStatus', `✅ Search completed - found ${result.results.length} relevant matches`, 'success');
-                    this.showStatus('searchStatus', `Search completed - found ${result.results.length} relevant matches`, 'success');
+                    if (trackingResult.success) {
+                        const results = trackingResult.results || [];
+                        this.displayResults(results);
+                        this.addLogEntry('searchStatus', `✅ Search completed - found ${results.length} relevant matches`, 'success');
+                        this.showStatus('searchStatus', `Search completed - found ${results.length} relevant matches`, 'success');
+                    } else {
+                        throw new Error(trackingResult.error || 'Search failed');
+                    }
                     
                 } catch (error) {
                     console.error('Search error:', error);
@@ -1357,7 +1366,7 @@ This would open a sophisticated document viewer with:
                 
                 let isComplete = false;
                 let pollCount = 0;
-                const maxPolls = 120; // 2 minutes max
+                const maxPolls = 240; // 2 minutes max (500ms * 240 = 120s)
                 
                 this.addLogEntry(statusId, `🔄 Starting real-time progress tracking for task ${taskId}`, 'info');
                 
@@ -1384,9 +1393,11 @@ This would open a sophisticated document viewer with:
                             if (progress.error) {
                                 this.addLogEntry(statusId, `❌ Error: ${progress.error}`, 'error');
                                 isComplete = true;
+                                return { success: false, error: progress.error };
                             } else if (progress.progress >= 100) {
                                 this.addLogEntry(statusId, `✅ Task completed successfully`, 'success');
                                 isComplete = true;
+                                return { success: true, results: progress.results || null };
                             }
                         } else if (response.status === 404) {
                             this.addLogEntry(statusId, `⚠️ Task ${taskId} not found on server`, 'warning');
@@ -1407,7 +1418,10 @@ This would open a sophisticated document viewer with:
                 
                 if (pollCount >= maxPolls) {
                     this.addLogEntry(statusId, `⏰ Progress tracking timed out after ${maxPolls * 0.5}s`, 'warning');
+                    return { success: false, error: 'Timeout' };
                 }
+                
+                return { success: false, error: 'Unknown error' };
             }
 
             formatDate(dateString) {
