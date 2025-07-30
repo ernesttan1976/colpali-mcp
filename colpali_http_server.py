@@ -261,55 +261,78 @@ class LanceDBManager:
             score_threshold: Minimum similarity score threshold
 
         Yields:
-            Progress updates and results
+            StreamingProgress objects
         """
+        task_id = f"search_{uuid.uuid4().hex[:8]}"
+        
         try:
             if self.table is None:
-                yield {"status": "error", "message": "Database table not initialized"}
+                yield StreamingProgress(
+                    task_id=task_id,
+                    progress=0.0,
+                    current_step="Database not initialized",
+                    step_num=0,
+                    total_steps=1,
+                    error="Database table not initialized"
+                )
                 return
 
-            yield {
-                "status": "progress",
-                "message": "Searching embeddings...",
-                "progress": 25,
-            }
+            yield StreamingProgress(
+                task_id=task_id,
+                progress=25.0,
+                current_step="Searching embeddings",
+                step_num=1,
+                total_steps=3,
+                details="Performing vector similarity search"
+            )
 
             # Perform vector similarity search
             results = self.table.search(query_embedding).limit(limit).to_pandas()
 
-            yield {
-                "status": "progress",
-                "message": "Processing results...",
-                "progress": 75,
-            }
+            yield StreamingProgress(
+                task_id=task_id,
+                progress=75.0,
+                current_step="Processing results",
+                step_num=2,
+                total_steps=3,
+                details=f"Found {len(results)} potential matches"
+            )
 
             # Filter by score threshold if needed
             if score_threshold > 0:
                 results = results[results["_distance"] <= (1 - score_threshold)]
 
-            yield {"status": "progress", "message": "Search completed", "progress": 100}
-
             # Format results
             search_results = []
             for _, row in results.iterrows():
                 search_results.append(
-                    {
-                        "id": row.get("id", ""),
-                        "content": row.get("content", ""),
-                        "metadata": row.get("metadata", {}),
-                        "score": 1
-                        - row["_distance"],  # Convert distance to similarity score
-                    }
+                    SearchResult(
+                        page_num=row.get("page_num", 0),
+                        doc_name=row.get("doc_name", ""),
+                        score=1 - row["_distance"],  # Convert distance to similarity score
+                        snippet=row.get("text_content", "")[:200]  # First 200 chars as snippet
+                    )
                 )
 
-            yield {
-                "status": "completed",
-                "results": search_results,
-                "total_results": len(search_results),
-            }
+            yield StreamingProgress(
+                task_id=task_id,
+                progress=100.0,
+                current_step="Search completed",
+                step_num=3,
+                total_steps=3,
+                details=f"Found {len(search_results)} relevant matches",
+                results=[result.__dict__ for result in search_results]  # Convert to dict for JSON serialization
+            )
 
         except Exception as e:
-            yield {"status": "error", "message": f"Search failed: {str(e)}"}
+            yield StreamingProgress(
+                task_id=task_id,
+                progress=0.0,
+                current_step="Search failed",
+                step_num=0,
+                total_steps=1,
+                error=f"Search failed: {str(e)}"
+            )
 
     async def store_embeddings(
         self, embeddings: List[torch.Tensor], metadata: List[Dict]
@@ -974,6 +997,7 @@ class ColPaliHTTPServer:
             async for progress in self.db_manager.search_embeddings(
                 query_embedding, request.top_k
             ):
+                # Update progress to fit within the overall search workflow
                 progress.task_id = task_id
                 progress.step_num = 3
                 progress.total_steps = 4
@@ -984,27 +1008,12 @@ class ColPaliHTTPServer:
                 )
 
                 # Capture results from the final progress update
-                if progress.progress >= 100.0 and hasattr(progress, "results"):
+                if progress.progress >= 90.0 and progress.results:
                     search_results = progress.results
                 await asyncio.sleep(0.1)
 
-            # Convert SearchResult objects to dictionaries
-            results = []
-            if search_results:
-                for result in search_results:
-                    if hasattr(result, "__dict__"):
-                        # SearchResult object
-                        results.append(
-                            {
-                                "page_num": result.page_num,
-                                "doc_name": result.doc_name,
-                                "score": result.score,
-                                "snippet": result.snippet,
-                            }
-                        )
-                    else:
-                        # Already a dict
-                        results.append(result)
+            # Process search results (already converted to dicts in search_embeddings)
+            results = search_results if search_results else []
 
             # Final completion
             final_progress = StreamingProgress(
