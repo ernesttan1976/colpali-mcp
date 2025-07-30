@@ -24,6 +24,7 @@ pillow==10.4.0
 lancedb==0.4.0
 pyarrow==20.0.0
 numpy==1.26.4
+pandas==2.2.2
 
 # API clients (for cloud inference)
 openai==1.78.0
