@@ -1170,47 +1170,26 @@
                 this.setButtonLoading('refreshDocsBtn', 'refreshBtnText', 'refreshSpinner', true);
                 
                 try {
-                    // Simulate API call - replace with actual endpoint
-                    await new Promise(resolve => setTimeout(resolve, 1200));
+                    const response = await fetch(`${this.apiBase}/documents`);
                     
-                    // Mock documents data with premium styling
-                    this.documents = [
-                        {
-                            id: 'doc1',
-                            name: 'Financial Report Q3 2024',
-                            pages: 15,
-                            created_date: '2024-07-25',
-                            size: '2.3 MB',
-                            embeddings_count: 15
-                        },
-                        {
-                            id: 'doc2', 
-                            name: 'Product Specifications',
-                            pages: 8,
-                            created_date: '2024-07-24',
-                            size: '1.1 MB',
-                            embeddings_count: 8
-                        },
-                        {
-                            id: 'doc3',
-                            name: 'Technical Documentation v2.1',
-                            pages: 32,
-                            created_date: '2024-07-22',
-                            size: '4.7 MB',
-                            embeddings_count: 32
-                        },
-                        {
-                            id: 'doc4',
-                            name: 'Compliance Guidelines',
-                            pages: 24,
-                            created_date: '2024-07-20',
-                            size: '3.2 MB',
-                            embeddings_count: 24
-                        }
-                    ];
+                    if (!response.ok) {
+                        throw new Error(`Failed to fetch documents: ${response.status}`);
+                    }
                     
+                    const data = await response.json();
+                    
+                    if (data.error) {
+                        throw new Error(data.error);
+                    }
+                    
+                    this.documents = data.documents || [];
                     this.displayDocuments();
-                    this.showStatus('documentsStatus', `Document library loaded - ${this.documents.length} documents available`, 'success');
+                    
+                    if (this.documents.length > 0) {
+                        this.showStatus('documentsStatus', `Document library loaded - ${this.documents.length} documents available`, 'success');
+                    } else {
+                        this.showStatus('documentsStatus', 'No documents found - use the Ingest tab to add documents', 'warning');
+                    }
                     
                 } catch (error) {
                     console.error('Error loading documents:', error);
