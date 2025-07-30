@@ -287,7 +287,20 @@ class LanceDBManager:
             )
 
             # Perform vector similarity search
-            results = self.table.search(query_embedding).limit(limit).to_pandas()
+            try:
+                # Use LanceDB's native search without pandas conversion
+                search_query = self.table.search(query_embedding).limit(limit)
+                results = search_query.to_lance().to_table().to_pylist()
+            except Exception as search_error:
+                yield StreamingProgress(
+                    task_id=task_id,
+                    progress=0.0,
+                    current_step="Search failed",
+                    step_num=0,
+                    total_steps=1,
+                    error=f"Vector search failed: {str(search_error)}"
+                )
+                return
 
             yield StreamingProgress(
                 task_id=task_id,
@@ -300,16 +313,16 @@ class LanceDBManager:
 
             # Filter by score threshold if needed
             if score_threshold > 0:
-                results = results[results["_distance"] <= (1 - score_threshold)]
+                results = [r for r in results if r.get("_distance", 1.0) <= (1 - score_threshold)]
 
             # Format results
             search_results = []
-            for _, row in results.iterrows():
+            for row in results:
                 search_results.append(
                     SearchResult(
                         page_num=row.get("page_num", 0),
                         doc_name=row.get("doc_name", ""),
-                        score=1 - row["_distance"],  # Convert distance to similarity score
+                        score=1 - row.get("_distance", 1.0),  # Convert distance to similarity score
                         snippet=row.get("text_content", "")[:200]  # First 200 chars as snippet
                     )
                 )
@@ -669,45 +682,48 @@ class ColPaliHTTPServer:
                 if self.db_manager.table is None:
                     return {"documents": [], "total": 0}
 
-                # Get all documents from the database
-                result = self.db_manager.table.search().limit(1000).to_pandas()
+                # Get all documents from the database using LanceDB query
+                try:
+                    # Use LanceDB's native query without pandas
+                    all_docs = self.db_manager.table.to_lance().to_table().to_pylist()
+                    
+                    if not all_docs:
+                        return {"documents": [], "total": 0}
 
-                if result.empty:
-                    return {"documents": [], "total": 0}
+                    # Group by document name manually
+                    docs_by_name = {}
+                    for doc in all_docs:
+                        doc_name = doc.get("doc_name", "Unknown")
+                        if doc_name not in docs_by_name:
+                            docs_by_name[doc_name] = {
+                                "pages": 0,
+                                "max_page": 0,
+                                "embeddings_count": 0,
+                                "created_at": doc.get("created_at", "Unknown")
+                            }
+                        
+                        docs_by_name[doc_name]["embeddings_count"] += 1
+                        page_num = doc.get("page_num", 0)
+                        if page_num > docs_by_name[doc_name]["max_page"]:
+                            docs_by_name[doc_name]["max_page"] = page_num
 
-                # Group by document name and aggregate stats
-                docs_grouped = (
-                    result.groupby("doc_name")
-                    .agg(
-                        {
-                            "page_num": ["count", "max"],
-                            "id": "first",  # Get first ID for each document
-                        }
-                    )
-                    .reset_index()
-                )
-
-                documents = []
-                for _, row in docs_grouped.iterrows():
-                    doc_name = row["doc_name"]
-                    page_count = row[("page_num", "count")]
-                    max_page = row[("page_num", "max")]
-
-                    # Get creation date from first entry for this document
-                    first_entry = result[result["doc_name"] == doc_name].iloc[0]
-
-                    documents.append(
-                        {
+                    # Format response
+                    documents = []
+                    for doc_name, stats in docs_by_name.items():
+                        documents.append({
                             "id": f"doc_{hash(doc_name) % 10000}",
                             "name": doc_name,
-                            "pages": int(max_page),
-                            "embeddings_count": int(page_count),
-                            "created_date": "2024-07-25",  # You might want to add this to your DB schema
-                            "size": "N/A",  # You might want to add this to your DB schema
-                        }
-                    )
+                            "pages": stats["max_page"],
+                            "embeddings_count": stats["embeddings_count"],
+                            "created_date": stats["created_at"][:10] if stats["created_at"] != "Unknown" else "2024-07-25",
+                            "size": "N/A",
+                        })
 
-                return {"documents": documents, "total": len(documents)}
+                    return {"documents": documents, "total": len(documents)}
+                    
+                except Exception as table_error:
+                    self.logger.warning(f"Could not read table data: {table_error}")
+                    return {"documents": [], "total": 0, "info": "No documents indexed yet"}
 
             except Exception as e:
                 self.logger.error(f"Error listing documents: {str(e)}")
