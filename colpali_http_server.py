@@ -18,10 +18,11 @@ import torch
 import lancedb
 from PIL import Image
 import fitz  # PyMuPDF
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException, BackgroundTasks, UploadFile, File
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 import uvicorn
+from fastapi.middleware.cors import CORSMiddleware
 
 # Mock ColPali imports (replace with actual imports)
 # from colpali_engine import ColPaliModel, ColPaliProcessor
@@ -504,6 +505,14 @@ class ColPaliHTTPServer:
     def setup_routes(self):
         """Setup FastAPI routes"""
 
+        self.app.add_middleware(
+            CORSMiddleware,
+            allow_origins=["*"],  # In production, specify your domain
+            allow_credentials=True,
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
+
         @self.app.get("/health")
         async def health_check():
             return {
@@ -545,12 +554,26 @@ class ColPaliHTTPServer:
                 raise HTTPException(status_code=500, detail=str(e))
 
         @self.app.post("/ingest")
-        async def ingest_pdf(request: IngestRequest):
+        async def ingest_pdf(file: UploadFile = File(...), doc_name: str = None):
             """Ingest PDF with streaming progress"""
             task_id = f"ingest_{uuid.uuid4().hex[:8]}"
-            doc_name = request.doc_name or Path(request.file_path).stem
-
+            
+            # Validate file type
+            if not file.filename.endswith('.pdf'):
+                raise HTTPException(status_code=400, detail="Only PDF files are supported")
+            
+            # Use provided doc_name or derive from filename
+            actual_doc_name = doc_name or Path(file.filename).stem
+            
+            # Save uploaded file temporarily
+            temp_file_path = f"/tmp/{file.filename}"
+            
             try:
+                # Save uploaded file
+                with open(temp_file_path, "wb") as buffer:
+                    content = await file.read()
+                    buffer.write(content)
+                
                 # Ensure model is loaded
                 if not self.model_manager.model_loaded:
                     async for progress in self.model_manager.load_model():
@@ -558,7 +581,7 @@ class ColPaliHTTPServer:
 
                 # Extract PDF pages
                 async for progress in self.pdf_processor.extract_pages(
-                    request.file_path
+                    temp_file_path
                 ):
                     progress.task_id = task_id
                     self.latest_progress[task_id] = progress
@@ -568,7 +591,7 @@ class ColPaliHTTPServer:
                 mock_metadata = [
                     {
                         "page_num": i + 1,
-                        "doc_name": doc_name,
+                        "doc_name": actual_doc_name,
                         "text_content": f"Page {i + 1} content",
                     }
                     for i in range(3)
@@ -589,10 +612,10 @@ class ColPaliHTTPServer:
                 return {
                     "task_id": task_id,
                     "status": "completed",
-                    "message": f"Successfully ingested {doc_name}",
+                    "message": f"Successfully ingested {actual_doc_name}",
                     "pages_processed": len(mock_images),
                 }
-
+            
             except Exception as e:
                 error_progress = StreamingProgress(
                     task_id=task_id,
@@ -604,6 +627,13 @@ class ColPaliHTTPServer:
                 )
                 self.latest_progress[task_id] = error_progress
                 raise HTTPException(status_code=500, detail=str(e))
+            
+            finally:
+                # Clean up temporary file
+                try:
+                    Path(temp_file_path).unlink(missing_ok=True)
+                except:
+                    pass
 
         @self.app.post("/search")
         async def search_documents(request: SearchRequest):

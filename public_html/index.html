@@ -1,0 +1,1258 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ColPali Document Search</title>
+    <style>
+        :root {
+            --bg-color: #0a0a0f;
+            --surface-color: #12121a;
+            --surface-hover: #1a1a28;
+            --accent-color: #6366f1;
+            --accent-hover: #4f46e5;
+            --accent-light: rgba(99, 102, 241, 0.1);
+            --text-primary: #f8fafc;
+            --text-secondary: #94a3b8;
+            --text-muted: #64748b;
+            --border-color: #1e293b;
+            --border-light: #334155;
+            --success-color: #10b981;
+            --error-color: #ef4444;
+            --warning-color: #f59e0b;
+            --shadow-light: rgba(0, 0, 0, 0.1);
+            --shadow-medium: rgba(0, 0, 0, 0.25);
+            --gradient-primary: linear-gradient(135deg, var(--accent-color), #8b5cf6);
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Inter', Roboto, sans-serif;
+            background: var(--bg-color);
+            color: var(--text-primary);
+            min-height: 100vh;
+            line-height: 1.6;
+            font-weight: 400;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 2rem;
+        }
+
+        .header {
+            text-align: center;
+            margin-bottom: 3rem;
+        }
+
+        .header h1 {
+            font-size: 2.75rem;
+            font-weight: 700;
+            margin-bottom: 0.75rem;
+            background: var(--gradient-primary);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            letter-spacing: -0.025em;
+        }
+
+        .header p {
+            color: var(--text-secondary);
+            font-size: 1.125rem;
+            font-weight: 400;
+        }
+
+        .tabs {
+            display: flex;
+            background: var(--surface-color);
+            border-radius: 1rem;
+            padding: 0.5rem;
+            margin-bottom: 2rem;
+            border: 1px solid var(--border-color);
+            box-shadow: 0 4px 6px var(--shadow-light);
+        }
+
+        .tab {
+            flex: 1;
+            padding: 1rem 2rem;
+            border: none;
+            background: transparent;
+            color: var(--text-secondary);
+            font-size: 1rem;
+            font-weight: 500;
+            border-radius: 0.75rem;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            position: relative;
+        }
+
+        .tab:hover {
+            color: var(--text-primary);
+            background: var(--surface-hover);
+        }
+
+        .tab.active {
+            background: var(--gradient-primary);
+            color: white;
+            box-shadow: 0 4px 12px rgba(99, 102, 241, 0.3);
+        }
+
+        .tab-content {
+            display: none;
+            animation: fadeIn 0.3s ease-in-out;
+        }
+
+        .tab-content.active {
+            display: block;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .panel {
+            background: var(--surface-color);
+            border-radius: 1.25rem;
+            padding: 2.5rem;
+            border: 1px solid var(--border-color);
+            box-shadow: 0 8px 25px var(--shadow-medium);
+            backdrop-filter: blur(10px);
+        }
+
+        .panel h2 {
+            font-size: 1.75rem;
+            margin-bottom: 2rem;
+            color: var(--text-primary);
+            font-weight: 600;
+            letter-spacing: -0.025em;
+        }
+
+        .form-grid {
+            display: grid;
+            gap: 2rem;
+            margin-bottom: 2rem;
+        }
+
+        .form-group {
+            display: flex;
+            flex-direction: column;
+        }
+
+        .form-group label {
+            margin-bottom: 0.75rem;
+            color: var(--text-secondary);
+            font-weight: 500;
+            font-size: 0.95rem;
+            letter-spacing: 0.025em;
+        }
+
+        .form-input {
+            padding: 1rem 1.25rem;
+            background: var(--bg-color);
+            border: 1px solid var(--border-color);
+            border-radius: 0.75rem;
+            color: var(--text-primary);
+            font-size: 1rem;
+            transition: all 0.3s ease;
+            font-weight: 400;
+        }
+
+        .form-input:focus {
+            outline: none;
+            border-color: var(--accent-color);
+            box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.1);
+        }
+
+        .form-input::placeholder {
+            color: var(--text-muted);
+        }
+
+        .btn {
+            padding: 1rem 2rem;
+            border: none;
+            border-radius: 0.75rem;
+            font-size: 1rem;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.75rem;
+            text-decoration: none;
+            letter-spacing: 0.025em;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .btn::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: -100%;
+            width: 100%;
+            height: 100%;
+            background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.1), transparent);
+            transition: left 0.5s;
+        }
+
+        .btn:hover::before {
+            left: 100%;
+        }
+
+        .btn-primary {
+            background: var(--gradient-primary);
+            color: white;
+            box-shadow: 0 4px 12px rgba(99, 102, 241, 0.3);
+        }
+
+        .btn-primary:hover:not(:disabled) {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 25px rgba(99, 102, 241, 0.4);
+        }
+
+        .btn-secondary {
+            background: var(--border-light);
+            color: var(--text-primary);
+            border: 1px solid var(--border-light);
+        }
+
+        .btn-secondary:hover:not(:disabled) {
+            background: var(--text-muted);
+            transform: translateY(-1px);
+        }
+
+        .btn-danger {
+            background: var(--error-color);
+            color: white;
+        }
+
+        .btn-danger:hover:not(:disabled) {
+            background: #dc2626;
+            transform: translateY(-1px);
+        }
+
+        .btn-small {
+            padding: 0.6rem 1.25rem;
+            font-size: 0.9rem;
+        }
+
+        .btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            transform: none !important;
+        }
+
+        .progress-container {
+            display: none;
+            margin-top: 1.5rem;
+        }
+
+        .progress-bar {
+            width: 100%;
+            height: 6px;
+            background: var(--border-color);
+            border-radius: 3px;
+            overflow: hidden;
+            box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.2);
+        }
+
+        .progress-fill {
+            height: 100%;
+            background: var(--gradient-primary);
+            border-radius: 3px;
+            transition: width 0.4s ease;
+            width: 0%;
+            box-shadow: 0 0 10px rgba(99, 102, 241, 0.5);
+        }
+
+        .progress-text {
+            margin-top: 0.75rem;
+            font-size: 0.9rem;
+            color: var(--text-secondary);
+            font-weight: 400;
+        }
+
+        .status-indicator {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.75rem;
+            padding: 0.75rem 1.25rem;
+            border-radius: 0.75rem;
+            font-size: 0.95rem;
+            font-weight: 500;
+            margin-top: 1.5rem;
+            backdrop-filter: blur(10px);
+        }
+
+        .status-success {
+            background: rgba(16, 185, 129, 0.15);
+            color: var(--success-color);
+            border: 1px solid rgba(16, 185, 129, 0.3);
+        }
+
+        .status-error {
+            background: rgba(239, 68, 68, 0.15);
+            color: var(--error-color);
+            border: 1px solid rgba(239, 68, 68, 0.3);
+        }
+
+        .status-loading {
+            background: var(--accent-light);
+            color: var(--accent-color);
+            border: 1px solid rgba(99, 102, 241, 0.3);
+        }
+
+        .results-container {
+            display: grid;
+            gap: 1.5rem;
+            margin-top: 2rem;
+        }
+
+        .result-item {
+            background: var(--bg-color);
+            border: 1px solid var(--border-color);
+            border-radius: 1rem;
+            padding: 2rem;
+            transition: all 0.3s ease;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .result-item::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 3px;
+            background: var(--gradient-primary);
+            opacity: 0;
+            transition: opacity 0.3s ease;
+        }
+
+        .result-item:hover {
+            border-color: var(--accent-color);
+            transform: translateY(-2px);
+            box-shadow: 0 8px 25px var(--shadow-medium);
+        }
+
+        .result-item:hover::before {
+            opacity: 1;
+        }
+
+        .result-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: start;
+            margin-bottom: 1rem;
+        }
+
+        .result-meta {
+            display: flex;
+            align-items: center;
+            gap: 1.5rem;
+            margin-bottom: 0.75rem;
+        }
+
+        .result-score {
+            background: var(--accent-light);
+            color: var(--accent-color);
+            padding: 0.375rem 0.75rem;
+            border-radius: 0.5rem;
+            font-size: 0.85rem;
+            font-weight: 600;
+            border: 1px solid rgba(99, 102, 241, 0.3);
+        }
+
+        .result-page {
+            color: var(--text-muted);
+            font-size: 0.9rem;
+            font-weight: 400;
+        }
+
+        .result-snippet {
+            color: var(--text-secondary);
+            font-style: italic;
+            line-height: 1.6;
+            font-weight: 400;
+        }
+
+        .spinner {
+            width: 20px;
+            height: 20px;
+            border: 2px solid rgba(99, 102, 241, 0.3);
+            border-top: 2px solid var(--accent-color);
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .hidden {
+            display: none;
+        }
+
+        .file-input-wrapper {
+            position: relative;
+            display: block;
+            width: 100%;
+        }
+
+        .file-input {
+            position: absolute;
+            opacity: 0;
+            width: 100%;
+            height: 100%;
+            cursor: pointer;
+            z-index: 10;
+        }
+
+        .file-input-display {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            padding: 3rem 2rem;
+            border: 2px dashed var(--border-light);
+            border-radius: 1rem;
+            background: var(--bg-color);
+            color: var(--text-muted);
+            text-align: center;
+            transition: all 0.3s ease;
+            cursor: pointer;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .file-input-display::before {
+            content: '';
+            position: absolute;
+            top: -50%;
+            left: -50%;
+            width: 200%;
+            height: 200%;
+            background: conic-gradient(from 0deg, transparent, var(--accent-color), transparent);
+            opacity: 0;
+            transition: opacity 0.3s ease;
+            animation: rotate 2s linear infinite;
+            z-index: 1;
+        }
+
+        .file-input-display::after {
+            content: '';
+            position: absolute;
+            inset: 2px;
+            background: var(--bg-color);
+            border-radius: 0.875rem;
+            z-index: 2;
+        }
+
+        .file-input-display > * {
+            position: relative;
+            z-index: 3;
+        }
+
+        .file-input-display:hover {
+            border-color: var(--accent-color);
+            background: var(--accent-light);
+            color: var(--text-primary);
+        }
+
+        .file-input-display:hover::before {
+            opacity: 0.1;
+        }
+
+        @keyframes rotate {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .file-selected {
+            color: var(--accent-color);
+            font-weight: 500;
+        }
+
+        .file-icon {
+            font-size: 3rem;
+            margin-bottom: 1rem;
+            opacity: 0.7;
+        }
+
+        .document-item {
+            background: var(--bg-color);
+            border: 1px solid var(--border-color);
+            border-radius: 1rem;
+            padding: 1.5rem;
+            margin-bottom: 1rem;
+            transition: all 0.3s ease;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .document-item::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 3px;
+            background: var(--gradient-primary);
+            opacity: 0;
+            transition: opacity 0.3s ease;
+        }
+
+        .document-item:hover {
+            border-color: var(--accent-color);
+            background: var(--accent-light);
+            transform: translateY(-2px);
+            box-shadow: 0 8px 25px var(--shadow-medium);
+        }
+
+        .document-item:hover::before {
+            opacity: 1;
+        }
+
+        .document-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: start;
+            margin-bottom: 1rem;
+        }
+
+        .document-name {
+            font-weight: 600;
+            color: var(--text-primary);
+            font-size: 1.1rem;
+            letter-spacing: -0.025em;
+        }
+
+        .document-meta {
+            display: flex;
+            gap: 1.5rem;
+            color: var(--text-muted);
+            font-size: 0.9rem;
+            margin-bottom: 1rem;
+            font-weight: 400;
+        }
+
+        .document-actions {
+            display: flex;
+            gap: 0.75rem;
+        }
+
+        .document-stats {
+            background: var(--accent-light);
+            border: 1px solid rgba(99, 102, 241, 0.3);
+            border-radius: 0.5rem;
+            padding: 0.375rem 0.75rem;
+            font-size: 0.8rem;
+            color: var(--accent-color);
+            font-weight: 500;
+        }
+
+        .empty-state {
+            text-align: center;
+            padding: 3rem 2rem;
+            color: var(--text-muted);
+            font-weight: 400;
+        }
+
+        .empty-state h3 {
+            color: var(--text-secondary);
+            margin-bottom: 0.5rem;
+            font-weight: 500;
+        }
+
+        .loading-skeleton {
+            background: linear-gradient(90deg, var(--border-color) 25%, var(--border-light) 50%, var(--border-color) 75%);
+            background-size: 200% 100%;
+            animation: shimmer 2s infinite;
+            border-radius: 0.5rem;
+            height: 1rem;
+            margin-bottom: 0.75rem;
+        }
+
+        @keyframes shimmer {
+            0% { background-position: -200% 0; }
+            100% { background-position: 200% 0; }
+        }
+
+        .refresh-btn {
+            margin-bottom: 1.5rem;
+        }
+
+        .search-grid {
+            display: grid;
+            grid-template-columns: 2fr 1fr;
+            gap: 1.5rem;
+        }
+
+        @media (max-width: 768px) {
+            .container {
+                padding: 1rem;
+            }
+            
+            .header h1 {
+                font-size: 2.25rem;
+            }
+
+            .tabs {
+                flex-direction: column;
+                gap: 0.25rem;
+            }
+
+            .tab {
+                padding: 0.75rem 1rem;
+            }
+
+            .panel {
+                padding: 1.5rem;
+            }
+
+            .search-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .document-actions {
+                flex-wrap: wrap;
+            }
+
+            .result-meta {
+                flex-direction: column;
+                gap: 0.75rem;
+                align-items: start;
+            }
+        }
+
+        @media (max-width: 480px) {
+            .btn {
+                padding: 0.875rem 1.5rem;
+                font-size: 0.95rem;
+            }
+
+            .document-header {
+                flex-direction: column;
+                gap: 0.75rem;
+                align-items: start;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>ColPali Document Search</h1>
+            <p>Advanced AI-powered document ingestion and semantic search platform</p>
+        </div>
+
+        <div class="tabs">
+            <button class="tab active" data-tab="ingest">Ingest</button>
+            <button class="tab" data-tab="query">Query</button>
+            <button class="tab" data-tab="manage">Manage</button>
+        </div>
+
+        <!-- Ingest Tab -->
+        <div class="tab-content active" id="ingest">
+            <div class="panel">
+                <h2>Document Ingestion</h2>
+                
+                <div class="form-grid">
+                    <div class="form-group">
+                        <label for="pdfFile">PDF Document</label>
+                        <div class="file-input-wrapper">
+                            <input type="file" id="pdfFile" class="file-input" accept=".pdf">
+                            <div class="file-input-display">
+                                <div class="file-icon">📄</div>
+                                <span id="fileDisplayText">Select PDF file or drag & drop</span>
+                                <small style="margin-top: 0.5rem; opacity: 0.7;">Supports PDF documents up to 50MB</small>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="docName">Document Name</label>
+                        <input type="text" id="docName" class="form-input" placeholder="Enter custom document name (optional)">
+                    </div>
+                </div>
+
+                <button id="ingestBtn" class="btn btn-primary">
+                    <span id="ingestBtnText">Process Document</span>
+                    <div id="ingestSpinner" class="spinner hidden"></div>
+                </button>
+
+                <div id="ingestProgress" class="progress-container">
+                    <div class="progress-bar">
+                        <div id="ingestProgressFill" class="progress-fill"></div>
+                    </div>
+                    <div id="ingestProgressText" class="progress-text"></div>
+                </div>
+
+                <div id="ingestStatus"></div>
+            </div>
+        </div>
+
+        <!-- Query Tab -->
+        <div class="tab-content" id="query">
+            <div class="panel">
+                <h2>Document Search</h2>
+                
+                <div class="search-grid">
+                    <div class="form-group">
+                        <label for="searchQuery">Search Query</label>
+                        <input type="text" id="searchQuery" class="form-input" placeholder="Enter your search query...">
+                    </div>
+
+                    <div class="form-group">
+                        <label for="topK">Result Limit</label>
+                        <input type="number" id="topK" class="form-input" value="5" min="1" max="20">
+                    </div>
+                </div>
+
+                <button id="searchBtn" class="btn btn-primary">
+                    <span id="searchBtnText">Search Documents</span>
+                    <div id="searchSpinner" class="spinner hidden"></div>
+                </button>
+
+                <div id="searchProgress" class="progress-container">
+                    <div class="progress-bar">
+                        <div id="searchProgressFill" class="progress-fill"></div>
+                    </div>
+                    <div id="searchProgressText" class="progress-text"></div>
+                </div>
+
+                <div id="searchStatus"></div>
+
+                <div id="resultsContainer" class="results-container" style="display: none;"></div>
+            </div>
+        </div>
+
+        <!-- Manage Tab -->
+        <div class="tab-content" id="manage">
+            <div class="panel">
+                <h2>Document Management</h2>
+                
+                <button id="refreshDocsBtn" class="btn btn-secondary btn-small refresh-btn">
+                    <span id="refreshBtnText">Refresh List</span>
+                    <div id="refreshSpinner" class="spinner hidden"></div>
+                </button>
+
+                <div id="documentsContainer">
+                    <div class="empty-state">
+                        <h3>Loading documents...</h3>
+                        <p>Please wait while we fetch your document library</p>
+                    </div>
+                </div>
+
+                <div id="documentsStatus"></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        class ColPaliUI {
+            constructor() {
+                this.apiBase = 'http://127.0.0.1:8000';
+                this.selectedFile = null;
+                this.documents = [];
+                this.currentTab = 'ingest';
+                this.initializeEventListeners();
+                this.checkServerHealth();
+                this.loadDocuments();
+            }
+
+            initializeEventListeners() {
+                // Tab switching
+                document.querySelectorAll('.tab').forEach(tab => {
+                    tab.addEventListener('click', (e) => {
+                        this.switchTab(e.target.dataset.tab);
+                    });
+                });
+
+                // File input handling
+                const fileInput = document.getElementById('pdfFile');
+                const fileDisplay = document.getElementById('fileDisplayText');
+                const fileDisplayEl = document.querySelector('.file-input-display');
+                
+                fileInput.addEventListener('change', (e) => {
+                    const file = e.target.files[0];
+                    if (file) {
+                        if (file.type !== 'application/pdf' && !file.name.toLowerCase().endsWith('.pdf')) {
+                            this.showStatus('ingestStatus', 'Please select a valid PDF file', 'error');
+                            fileInput.value = '';
+                            return;
+                        }
+                        this.selectedFile = file;
+                        fileDisplay.innerHTML = `<strong>Selected:</strong> ${file.name}`;
+                        fileDisplay.classList.add('file-selected');
+                        // Clear any previous error status
+                        document.getElementById('ingestStatus').innerHTML = '';
+                    }
+                });
+
+                // Click handler for file display area
+                fileDisplayEl.addEventListener('click', (e) => {
+                    if (e.target === fileDisplayEl || fileDisplayEl.contains(e.target)) {
+                        fileInput.click();
+                    }
+                });
+
+                // Drag and drop
+                fileDisplayEl.addEventListener('dragover', (e) => {
+                    e.preventDefault();
+                    fileDisplayEl.style.borderColor = 'var(--accent-color)';
+                });
+
+                fileDisplayEl.addEventListener('dragleave', (e) => {
+                    e.preventDefault();
+                    fileDisplayEl.style.borderColor = 'var(--border-light)';
+                });
+
+                fileDisplayEl.addEventListener('drop', (e) => {
+                    e.preventDefault();
+                    fileDisplayEl.style.borderColor = 'var(--border-light)';
+                    
+                    const files = e.dataTransfer.files;
+                    if (files.length > 0) {
+                        const file = files[0];
+                        if (file.type !== 'application/pdf' && !file.name.toLowerCase().endsWith('.pdf')) {
+                            this.showStatus('ingestStatus', 'Please select a valid PDF file', 'error');
+                            return;
+                        }
+                        this.selectedFile = file;
+                        fileDisplay.innerHTML = `<strong>Selected:</strong> ${file.name}`;
+                        fileDisplay.classList.add('file-selected');
+                        fileInput.files = files;
+                        // Clear any previous error status
+                        document.getElementById('ingestStatus').innerHTML = '';
+                    }
+                });
+
+                // Buttons
+                document.getElementById('ingestBtn').addEventListener('click', () => this.ingestDocument());
+                document.getElementById('searchBtn').addEventListener('click', () => this.searchDocuments());
+                document.getElementById('refreshDocsBtn').addEventListener('click', () => this.loadDocuments());
+
+                // Enter key for search
+                document.getElementById('searchQuery').addEventListener('keypress', (e) => {
+                    if (e.key === 'Enter') {
+                        this.searchDocuments();
+                    }
+                });
+            }
+
+            switchTab(tabName) {
+                // Update tab buttons
+                document.querySelectorAll('.tab').forEach(tab => {
+                    tab.classList.remove('active');
+                });
+                document.querySelector(`[data-tab="${tabName}"]`).classList.add('active');
+
+                // Update tab content
+                document.querySelectorAll('.tab-content').forEach(content => {
+                    content.classList.remove('active');
+                });
+                document.getElementById(tabName).classList.add('active');
+
+                this.currentTab = tabName;
+            }
+
+            async checkServerHealth() {
+                try {
+                    const response = await fetch(`${this.apiBase}/health`);
+                    const data = await response.json();
+                    
+                    if (data.status === 'healthy') {
+                        this.showStatus('searchStatus', 'Server connection established', 'success');
+                        if (!data.model_loaded) {
+                            this.showStatus('ingestStatus', 'Model initialization required - process a document to begin', 'loading');
+                        }
+                    }
+                } catch (error) {
+                    this.showStatus('searchStatus', 'Unable to connect to server - please verify ColPali service is running', 'error');
+                    this.showStatus('ingestStatus', 'Server connection unavailable', 'error');
+                }
+            }
+
+            async ingestDocument() {
+                if (!this.selectedFile) {
+                    this.showStatus('ingestStatus', 'Please select a PDF document to process', 'error');
+                    return;
+                }
+
+                const formData = new FormData();
+                formData.append('file', this.selectedFile);
+                
+                const docName = document.getElementById('docName').value || this.selectedFile.name.replace('.pdf', '');
+                if (docName !== this.selectedFile.name.replace('.pdf', '')) {
+                    formData.append('doc_name', docName);
+                }
+
+                this.setButtonLoading('ingestBtn', 'ingestBtnText', 'ingestSpinner', true);
+                this.showProgress('ingestProgress', 0, 'Uploading and processing document...');
+
+                try {
+                    const response = await fetch(`${this.apiBase}/ingest`, {
+                        method: 'POST',
+                        body: formData
+                    });
+
+                    if (!response.ok) {
+                        throw new Error(`Processing failed with status: ${response.status}`);
+                    }
+
+                    const result = await response.json();
+                    
+                    await this.trackProgress(result.task_id, 'ingest');
+                    
+                    this.showStatus('ingestStatus', `Document "${docName}" processed successfully (${result.pages_processed} pages indexed)`, 'success');
+                    
+                    // Refresh documents list and clear form
+                    setTimeout(() => {
+                        this.loadDocuments();
+                        this.clearIngestForm();
+                    }, 1000);
+                    
+                } catch (error) {
+                    console.error('Ingestion error:', error);
+                    this.showStatus('ingestStatus', `Processing failed: ${error.message}`, 'error');
+                } finally {
+                    this.setButtonLoading('ingestBtn', 'ingestBtnText', 'ingestSpinner', false);
+                    this.hideProgress('ingestProgress');
+                }
+            }
+
+            clearIngestForm() {
+                document.getElementById('pdfFile').value = '';
+                document.getElementById('docName').value = '';
+                document.getElementById('fileDisplayText').innerHTML = 'Select PDF file or drag & drop';
+                document.getElementById('fileDisplayText').classList.remove('file-selected');
+                this.selectedFile = null;
+            }
+
+            async searchDocuments() {
+                const query = document.getElementById('searchQuery').value.trim();
+                const topK = parseInt(document.getElementById('topK').value) || 5;
+
+                if (!query) {
+                    this.showStatus('searchStatus', 'Please enter a search query to continue', 'error');
+                    return;
+                }
+
+                this.setButtonLoading('searchBtn', 'searchBtnText', 'searchSpinner', true);
+                this.showProgress('searchProgress', 0, 'Processing search query...');
+
+                try {
+                    const response = await fetch(`${this.apiBase}/search`, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                        },
+                        body: JSON.stringify({
+                            query: query,
+                            top_k: topK
+                        })
+                    });
+
+                    if (!response.ok) {
+                        throw new Error(`Search failed with status: ${response.status}`);
+                    }
+
+                    const result = await response.json();
+                    
+                    await this.trackProgress(result.task_id, 'search');
+                    
+                    this.displayResults(result.results);
+                    this.showStatus('searchStatus', `Search completed - found ${result.results.length} relevant matches`, 'success');
+                    
+                } catch (error) {
+                    console.error('Search error:', error);
+                    this.showStatus('searchStatus', `Search failed: ${error.message}`, 'error');
+                    this.hideResults();
+                } finally {
+                    this.setButtonLoading('searchBtn', 'searchBtnText', 'searchSpinner', false);
+                    this.hideProgress('searchProgress');
+                }
+            }
+
+            async loadDocuments() {
+                this.setButtonLoading('refreshDocsBtn', 'refreshBtnText', 'refreshSpinner', true);
+                
+                try {
+                    // Simulate API call - replace with actual endpoint
+                    await new Promise(resolve => setTimeout(resolve, 1200));
+                    
+                    // Mock documents data with premium styling
+                    this.documents = [
+                        {
+                            id: 'doc1',
+                            name: 'Financial Report Q3 2024',
+                            pages: 15,
+                            created_date: '2024-07-25',
+                            size: '2.3 MB',
+                            embeddings_count: 15
+                        },
+                        {
+                            id: 'doc2', 
+                            name: 'Product Specifications',
+                            pages: 8,
+                            created_date: '2024-07-24',
+                            size: '1.1 MB',
+                            embeddings_count: 8
+                        },
+                        {
+                            id: 'doc3',
+                            name: 'Technical Documentation v2.1',
+                            pages: 32,
+                            created_date: '2024-07-22',
+                            size: '4.7 MB',
+                            embeddings_count: 32
+                        },
+                        {
+                            id: 'doc4',
+                            name: 'Compliance Guidelines',
+                            pages: 24,
+                            created_date: '2024-07-20',
+                            size: '3.2 MB',
+                            embeddings_count: 24
+                        }
+                    ];
+                    
+                    this.displayDocuments();
+                    this.showStatus('documentsStatus', `Document library loaded - ${this.documents.length} documents available`, 'success');
+                    
+                } catch (error) {
+                    console.error('Error loading documents:', error);
+                    this.showStatus('documentsStatus', `Failed to load document library: ${error.message}`, 'error');
+                    this.displayDocuments([]);
+                } finally {
+                    this.setButtonLoading('refreshDocsBtn', 'refreshBtnText', 'refreshSpinner', false);
+                }
+            }
+
+            displayDocuments(documents = this.documents) {
+                const container = document.getElementById('documentsContainer');
+                
+                if (!documents || documents.length === 0) {
+                    container.innerHTML = `
+                        <div class="empty-state">
+                            <h3>No Documents Found</h3>
+                            <p>Your document library is empty. Process PDF documents using the Ingest tab to build your searchable collection.</p>
+                        </div>
+                    `;
+                    return;
+                }
+
+                container.innerHTML = documents.map(doc => `
+                    <div class="document-item" data-doc-id="${doc.id}">
+                        <div class="document-header">
+                            <div class="document-name">${doc.name}</div>
+                            <div class="document-stats">${doc.embeddings_count} embeddings</div>
+                        </div>
+                        <div class="document-meta">
+                            <span>Pages: ${doc.pages}</span>
+                            <span>Size: ${doc.size}</span>
+                            <span>Created: ${this.formatDate(doc.created_date)}</span>
+                        </div>
+                        <div class="document-actions">
+                            <button class="btn btn-secondary btn-small" onclick="colpaliUI.viewDocument('${doc.id}')">
+                                View Details
+                            </button>
+                            <button class="btn btn-secondary btn-small" onclick="colpaliUI.reindexDocument('${doc.id}')">
+                                Reprocess
+                            </button>
+                            <button class="btn btn-danger btn-small" onclick="colpaliUI.deleteDocument('${doc.id}', '${doc.name}')">
+                                Remove
+                            </button>
+                        </div>
+                    </div>
+                `).join('');
+            }
+
+            async viewDocument(docId) {
+                const doc = this.documents.find(d => d.id === docId);
+                if (!doc) return;
+
+                // Premium modal simulation
+                const details = `
+Document: ${doc.name}
+Pages: ${doc.pages}
+Size: ${doc.size}
+Embeddings: ${doc.embeddings_count}
+Created: ${this.formatDate(doc.created_date)}
+
+This would open a sophisticated document viewer with:
+- Page-by-page navigation
+- Embedding visualization
+- Metadata inspection
+- Search result highlighting`;
+
+                alert(details);
+            }
+
+            async reindexDocument(docId) {
+                const doc = this.documents.find(d => d.id === docId);
+                if (!doc) return;
+
+                if (!confirm(`Reprocess "${doc.name}"?\n\nThis will regenerate all embeddings for this document using the latest AI model. The process may take several minutes.`)) {
+                    return;
+                }
+
+                try {
+                    this.showStatus('documentsStatus', `Reprocessing "${doc.name}" - this may take several minutes...`, 'loading');
+                    
+                    // Simulate reindexing process
+                    await new Promise(resolve => setTimeout(resolve, 3000));
+                    
+                    this.showStatus('documentsStatus', `Document "${doc.name}" has been successfully reprocessed`, 'success');
+                    
+                } catch (error) {
+                    console.error('Reindex error:', error);
+                    this.showStatus('documentsStatus', `Reprocessing failed: ${error.message}`, 'error');
+                }
+            }
+
+            async deleteDocument(docId, docName) {
+                if (!confirm(`Remove "${docName}" from your library?\n\nThis will permanently delete the document and all associated embeddings. This action cannot be undone.`)) {
+                    return;
+                }
+
+                try {
+                    this.showStatus('documentsStatus', `Removing "${docName}" from library...`, 'loading');
+                    
+                    // Simulate deletion
+                    await new Promise(resolve => setTimeout(resolve, 1500));
+                    
+                    // Remove from local array
+                    this.documents = this.documents.filter(d => d.id !== docId);
+                    this.displayDocuments();
+                    
+                    this.showStatus('documentsStatus', `Document "${docName}" has been removed from your library`, 'success');
+                    
+                } catch (error) {
+                    console.error('Delete error:', error);
+                    this.showStatus('documentsStatus', `Removal failed: ${error.message}`, 'error');
+                }
+            }
+
+            displayResults(results) {
+                const resultsContainer = document.getElementById('resultsContainer');
+
+                if (!results || results.length === 0) {
+                    resultsContainer.innerHTML = `
+                        <div class="empty-state">
+                            <h3>No Results Found</h3>
+                            <p>Your search didn't return any matches. Try refining your query or check if documents have been processed.</p>
+                        </div>
+                    `;
+                    resultsContainer.style.display = 'block';
+                    return;
+                }
+
+                resultsContainer.innerHTML = results.map((result, index) => `
+                    <div class="result-item">
+                        <div class="result-header">
+                            <div class="result-meta">
+                                <span class="result-score">${(result.score * 100).toFixed(1)}% match</span>
+                                <span class="result-page">Page ${result.page_num} • ${result.doc_name}</span>
+                            </div>
+                        </div>
+                        <div class="result-snippet">${result.snippet}</div>
+                    </div>
+                `).join('');
+
+                resultsContainer.style.display = 'block';
+                resultsContainer.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            }
+
+            hideResults() {
+                document.getElementById('resultsContainer').style.display = 'none';
+            }
+
+            async trackProgress(taskId, type) {
+                const progressId = type === 'ingest' ? 'ingestProgress' : 'searchProgress';
+                const progressFillId = type === 'ingest' ? 'ingestProgressFill' : 'searchProgressFill';
+                const progressTextId = type === 'ingest' ? 'ingestProgressText' : 'searchProgressText';
+
+                const steps = type === 'ingest' ? [
+                    { progress: 15, text: 'Initializing document processing...' },
+                    { progress: 35, text: 'Extracting pages and content...' },
+                    { progress: 55, text: 'Generating AI embeddings...' },
+                    { progress: 75, text: 'Optimizing vector storage...' },
+                    { progress: 90, text: 'Finalizing indexing...' },
+                    { progress: 100, text: 'Document processing complete' }
+                ] : [
+                    { progress: 25, text: 'Processing search query...' },
+                    { progress: 50, text: 'Generating query embeddings...' },
+                    { progress: 75, text: 'Computing semantic similarity...' },
+                    { progress: 100, text: 'Search results compiled' }
+                ];
+
+                for (const step of steps) {
+                    this.showProgress(progressId, step.progress, step.text);
+                    await new Promise(resolve => setTimeout(resolve, 600));
+                }
+            }
+
+            formatDate(dateString) {
+                const date = new Date(dateString);
+                return date.toLocaleDateString('en-US', { 
+                    month: 'short', 
+                    day: 'numeric',
+                    year: 'numeric'
+                });
+            }
+
+            showStatus(elementId, message, type) {
+                const element = document.getElementById(elementId);
+                element.innerHTML = `<div class="status-indicator status-${type}">${message}</div>`;
+            }
+
+            showProgress(progressId, percent, text) {
+                const container = document.getElementById(progressId);
+                const fill = document.getElementById(progressId.replace('Progress', 'ProgressFill'));
+                const textEl = document.getElementById(progressId.replace('Progress', 'ProgressText'));
+
+                container.style.display = 'block';
+                fill.style.width = `${percent}%`;
+                textEl.textContent = text;
+            }
+
+            hideProgress(progressId) {
+                document.getElementById(progressId).style.display = 'none';
+            }
+
+            setButtonLoading(btnId, textId, spinnerId, loading) {
+                const btn = document.getElementById(btnId);
+                const text = document.getElementById(textId);
+                const spinner = document.getElementById(spinnerId);
+
+                btn.disabled = loading;
+                
+                if (loading) {
+                    text.style.display = 'none';
+                    spinner.classList.remove('hidden');
+                } else {
+                    text.style.display = 'inline';
+                    spinner.classList.add('hidden');
+                }
+            }
+        }
+
+        // Initialize the UI when the page loads
+        let colpaliUI;
+        document.addEventListener('DOMContentLoaded', () => {
+            colpaliUI = new ColPaliUI();
+        });
+    </script>
+</body>
+</html>
