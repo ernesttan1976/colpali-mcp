@@ -270,7 +270,7 @@ class LanceDBManager:
             StreamingProgress objects
         """
         task_id = f"search_{uuid.uuid4().hex[:8]}"
-        
+
         try:
             if self.table is None:
                 yield StreamingProgress(
@@ -279,7 +279,7 @@ class LanceDBManager:
                     current_step="Database not initialized",
                     step_num=0,
                     total_steps=1,
-                    error="Database table not initialized"
+                    error="Database table not initialized",
                 )
                 return
 
@@ -289,31 +289,31 @@ class LanceDBManager:
                 current_step="Searching embeddings",
                 step_num=1,
                 total_steps=3,
-                details="Performing vector similarity search"
+                details="Performing vector similarity search",
             )
 
             # Perform vector similarity search
             try:
                 # Ensure query_embedding is in the correct format for LanceDB
-                if hasattr(query_embedding, 'numpy'):
+                if hasattr(query_embedding, "numpy"):
                     search_vector = query_embedding.numpy().flatten().tolist()
                 elif isinstance(query_embedding, torch.Tensor):
                     search_vector = query_embedding.flatten().tolist()
-                elif hasattr(query_embedding, 'flatten'):
+                elif hasattr(query_embedding, "flatten"):
                     search_vector = query_embedding.flatten()
-                    if hasattr(search_vector, 'tolist'):
+                    if hasattr(search_vector, "tolist"):
                         search_vector = search_vector.tolist()
                 else:
                     search_vector = query_embedding
-                
+
                 # Ensure it's a list of numbers
                 if not isinstance(search_vector, list):
                     search_vector = list(search_vector)
-                
-                # Use LanceDB search with proper format
-                search_query = self.table.search(search_vector).limit(limit)
-                results = search_query.to_pandas().to_dict('records')
-                
+
+                # Use LanceDB search with proper format and specify vector column
+                search_query = self.table.search(search_vector, vector_column_name="vector").limit(limit)
+                results = search_query.to_pandas().to_dict("records")
+
             except Exception as search_error:
                 yield StreamingProgress(
                     task_id=task_id,
@@ -321,7 +321,7 @@ class LanceDBManager:
                     current_step="Search failed",
                     step_num=0,
                     total_steps=1,
-                    error=f"Vector search failed: {str(search_error)}"
+                    error=f"Vector search failed: {str(search_error)}",
                 )
                 return
 
@@ -331,12 +331,16 @@ class LanceDBManager:
                 current_step="Processing results",
                 step_num=2,
                 total_steps=3,
-                details=f"Found {len(results)} potential matches"
+                details=f"Found {len(results)} potential matches",
             )
 
             # Filter by score threshold if needed
             if score_threshold > 0:
-                results = [r for r in results if r.get("_distance", 1.0) <= (1 - score_threshold)]
+                results = [
+                    r
+                    for r in results
+                    if r.get("_distance", 1.0) <= (1 - score_threshold)
+                ]
 
             # Format results
             search_results = []
@@ -345,8 +349,13 @@ class LanceDBManager:
                     SearchResult(
                         page_num=row.get("page_num", 0),
                         doc_name=row.get("doc_name", ""),
-                        score=1 - row.get("_distance", 1.0),  # Convert distance to similarity score
-                        snippet=row.get("text_content", "")[:200]  # First 200 chars as snippet
+                        score=1
+                        - row.get(
+                            "_distance", 1.0
+                        ),  # Convert distance to similarity score
+                        snippet=row.get("text_content", "")[
+                            :200
+                        ],  # First 200 chars as snippet
                     )
                 )
 
@@ -357,7 +366,9 @@ class LanceDBManager:
                 step_num=3,
                 total_steps=3,
                 details=f"Found {len(search_results)} relevant matches",
-                results=[result.__dict__ for result in search_results]  # Convert to dict for JSON serialization
+                results=[
+                    result.__dict__ for result in search_results
+                ],  # Convert to dict for JSON serialization
             )
 
         except Exception as e:
@@ -367,7 +378,7 @@ class LanceDBManager:
                 current_step="Search failed",
                 step_num=0,
                 total_steps=1,
-                error=f"Search failed: {str(e)}"
+                error=f"Search failed: {str(e)}",
             )
 
     async def store_embeddings(
@@ -396,7 +407,7 @@ class LanceDBManager:
             data.append(
                 {
                     "id": f"{meta['doc_name']}_page_{meta['page_num']}",
-                    "embedding": embedding.numpy().flatten().tolist(),
+                    "vector": embedding.numpy().flatten().tolist(),
                     "doc_name": meta["doc_name"],
                     "page_num": meta["page_num"],
                     "text_content": meta.get("text_content", ""),
@@ -707,9 +718,9 @@ class ColPaliHTTPServer:
 
                 # Get all documents from the database using LanceDB query
                 try:
-                # Use LanceDB's pandas conversion for more reliable results
-                all_docs = self.db_manager.table.to_pandas().to_dict('records')
-                    
+                    # Use LanceDB's pandas conversion for more reliable results
+                    all_docs = self.db_manager.table.to_pandas().to_dict("records")
+
                     if not all_docs:
                         return {"documents": [], "total": 0}
 
@@ -722,9 +733,9 @@ class ColPaliHTTPServer:
                                 "pages": 0,
                                 "max_page": 0,
                                 "embeddings_count": 0,
-                                "created_at": doc.get("created_at", "Unknown")
+                                "created_at": doc.get("created_at", "Unknown"),
                             }
-                        
+
                         docs_by_name[doc_name]["embeddings_count"] += 1
                         page_num = doc.get("page_num", 0)
                         if page_num > docs_by_name[doc_name]["max_page"]:
@@ -733,20 +744,28 @@ class ColPaliHTTPServer:
                     # Format response
                     documents = []
                     for doc_name, stats in docs_by_name.items():
-                        documents.append({
-                            "id": f"doc_{hash(doc_name) % 10000}",
-                            "name": doc_name,
-                            "pages": stats["max_page"],
-                            "embeddings_count": stats["embeddings_count"],
-                            "created_date": stats["created_at"][:10] if stats["created_at"] != "Unknown" else "2024-07-25",
-                            "size": "N/A",
-                        })
+                        documents.append(
+                            {
+                                "id": f"doc_{hash(doc_name) % 10000}",
+                                "name": doc_name,
+                                "pages": stats["max_page"],
+                                "embeddings_count": stats["embeddings_count"],
+                                "created_date": stats["created_at"][:10]
+                                if stats["created_at"] != "Unknown"
+                                else "2024-07-25",
+                                "size": "N/A",
+                            }
+                        )
 
                     return {"documents": documents, "total": len(documents)}
-                    
+
                 except Exception as table_error:
                     self.logger.warning(f"Could not read table data: {table_error}")
-                    return {"documents": [], "total": 0, "info": "No documents indexed yet"}
+                    return {
+                        "documents": [],
+                        "total": 0,
+                        "info": "No documents indexed yet",
+                    }
 
             except Exception as e:
                 self.logger.error(f"Error listing documents: {str(e)}")
@@ -1031,8 +1050,10 @@ class ColPaliHTTPServer:
             query_embedding = torch.randn(1, 128)
 
             # Get the actual query embedding
-            query_embedding = await self.model_manager.encode_query_simple(request.query)
-            
+            query_embedding = await self.model_manager.encode_query_simple(
+                request.query
+            )
+
             # Search database
             self.logger.info(f"Task {task_id}: Performing vector similarity search")
             search_results = None
