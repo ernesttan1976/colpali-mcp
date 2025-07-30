@@ -603,7 +603,7 @@ class ColPaliHTTPServer:
                 self.logger.info(f"Task {task_id}: {initial_progress.current_step}")
                 
                 # Start background processing
-                asyncio.create_task(self._process_pdf_background(task_id, temp_file_path, actual_doc_name))
+                asyncio.create_task(self.process_pdf_background(task_id, temp_file_path, actual_doc_name))
                 
                 return {
                     "task_id": task_id,
@@ -745,7 +745,7 @@ class ColPaliHTTPServer:
             self.logger.info(f"Task {task_id}: {initial_progress.current_step}")
             
             # Start background processing
-            asyncio.create_task(self._process_search_background(task_id, request))
+            asyncio.create_task(self.process_search_background(task_id, request))
             
             return {
                 "task_id": task_id,
