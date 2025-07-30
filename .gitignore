@@ -32,3 +32,4 @@ build/
 models/
 data/
 node_modules/
+colpali_db/

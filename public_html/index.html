@@ -1366,11 +1366,22 @@ This would open a sophisticated document viewer with:
                 
                 let isComplete = false;
                 let pollCount = 0;
-                const maxPolls = 240; // 2 minutes max (500ms * 240 = 120s)
+                let lastLogTime = Date.now();
+                const maxIdleTime = 120000; // 2 minutes without logs = timeout
+                const maxTotalTime = 600000; // 10 minutes absolute max
+                const startTime = Date.now();
                 
                 this.addLogEntry(statusId, `🔄 Starting real-time progress tracking for task ${taskId}`, 'info');
                 
-                while (!isComplete && pollCount < maxPolls) {
+                while (!isComplete) {
+                    const currentTime = Date.now();
+                    
+                    // Check absolute timeout
+                    if (currentTime - startTime > maxTotalTime) {
+                        this.addLogEntry(statusId, `⏰ Progress tracking timed out after ${Math.round((currentTime - startTime) / 1000)}s (absolute limit)`, 'warning');
+                        return { success: false, error: 'Absolute timeout reached' };
+                    }
+                    
                     try {
                         const response = await fetch(`${this.apiBase}/progress/${taskId}`);
                         
@@ -1388,6 +1399,11 @@ This would open a sophisticated document viewer with:
                             const eta = progress.eta_seconds ? ` - ETA: ${progress.eta_seconds}s` : '';
                             
                             this.addLogEntry(statusId, `${logMessage}${details}${throughput}${eta}`, 'info');
+                            
+                            // Reset idle timer whenever we get a log with meaningful progress
+                            if (progress.current_step && progress.current_step !== 'Waiting...' && progress.current_step !== 'Idle') {
+                                lastLogTime = currentTime;
+                            }
                             
                             // Check for completion or error
                             if (progress.error) {
@@ -1409,16 +1425,17 @@ This would open a sophisticated document viewer with:
                         this.addLogEntry(statusId, `⚠️ Progress fetch error: ${error.message}`, 'warning');
                     }
                     
+                    // Only check idle timeout if we haven't received meaningful logs
+                    if (currentTime - lastLogTime > maxIdleTime) {
+                        this.addLogEntry(statusId, `⏰ Progress tracking timed out after ${Math.round((currentTime - lastLogTime) / 1000)}s without logs`, 'warning');
+                        return { success: false, error: 'Idle timeout - no progress logs received' };
+                    }
+                    
                     pollCount++;
                     
                     if (!isComplete) {
                         await new Promise(resolve => setTimeout(resolve, 500)); // Poll every 500ms
                     }
-                }
-                
-                if (pollCount >= maxPolls) {
-                    this.addLogEntry(statusId, `⏰ Progress tracking timed out after ${maxPolls * 0.5}s`, 'warning');
-                    return { success: false, error: 'Timeout' };
                 }
                 
                 return { success: false, error: 'Unknown error' };
@@ -1462,6 +1479,7 @@ This would open a sophisticated document viewer with:
             
             displayServerLogs(logs) {
                 const logsList = document.getElementById('serverLogsList');
+                const logsContent = document.querySelector('#serverLogsContainer .logs-content');
                 
                 if (!logs || logs.length === 0) {
                     logsList.innerHTML = '<div class="empty-state"><p>No server logs available</p></div>';
@@ -1479,8 +1497,12 @@ This would open a sophisticated document viewer with:
                     `;
                 }).join('');
                 
-                // Auto-scroll to bottom
-                logsList.scrollTop = logsList.scrollHeight;
+                // Auto-scroll to bottom with a slight delay to ensure content is rendered
+                setTimeout(() => {
+                    if (logsContent) {
+                        logsContent.scrollTop = logsContent.scrollHeight;
+                    }
+                }, 10);
             }
             
             getLogType(level) {
@@ -1547,6 +1569,7 @@ This would open a sophisticated document viewer with:
                 
                 if (logsContainer) {
                     const logsList = logsContainer.querySelector('.logs-list');
+                    const logsContent = logsContainer.querySelector('.logs-content');
                     const timestamp = new Date().toLocaleTimeString();
                     
                     const logEntry = document.createElement('div');
@@ -1558,13 +1581,20 @@ This would open a sophisticated document viewer with:
                     
                     logsList.appendChild(logEntry);
                     
-                    // Auto-scroll to bottom
-                    logsList.scrollTop = logsList.scrollHeight;
+                    // Auto-scroll to bottom of the logs content area
+                    setTimeout(() => {
+                        logsContent.scrollTop = logsContent.scrollHeight;
+                    }, 10);
                     
                     // Limit log entries to prevent memory issues
                     const logEntries = logsList.querySelectorAll('.log-entry');
-                    if (logEntries.length > 50) {
-                        logEntries[0].remove();
+                    if (logEntries.length > 100) {
+                        // Remove oldest entries, keep last 80
+                        for (let i = 0; i < 20; i++) {
+                            if (logEntries[i]) {
+                                logEntries[i].remove();
+                            }
+                        }
                     }
                 }
             }
