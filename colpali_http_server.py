@@ -495,9 +495,17 @@ class ColPaliHTTPServer:
         self.active_tasks: Dict[str, AsyncGenerator] = {}
         self.latest_progress: Dict[str, StreamingProgress] = {}
 
-        # Setup logging
-        logging.basicConfig(level=logging.INFO)
+        # Setup enhanced logging
+        logging.basicConfig(
+            level=logging.INFO,
+            format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+            handlers=[
+                logging.StreamHandler(),  # Console output
+                logging.FileHandler('colpali_server.log', mode='a')  # File logging
+            ]
+        )
         self.logger = logging.getLogger(__name__)
+        self.logger.info("ColPali HTTP Server initialized")
 
         # Setup routes
         self.setup_routes()
@@ -557,66 +565,119 @@ class ColPaliHTTPServer:
         async def ingest_pdf(file: UploadFile = File(...), doc_name: str = None):
             """Ingest PDF with streaming progress"""
             task_id = f"ingest_{uuid.uuid4().hex[:8]}"
+            self.logger.info(f"Starting ingestion task {task_id} for file: {file.filename}")
             
             # Validate file type
             if not file.filename.endswith('.pdf'):
+                self.logger.error(f"Invalid file type for {file.filename} - only PDF supported")
                 raise HTTPException(status_code=400, detail="Only PDF files are supported")
             
             # Use provided doc_name or derive from filename
             actual_doc_name = doc_name or Path(file.filename).stem
+            self.logger.info(f"Processing document: {actual_doc_name}")
             
             # Save uploaded file temporarily
             temp_file_path = f"/tmp/{file.filename}"
             
             try:
                 # Save uploaded file
+                self.logger.info(f"Saving uploaded file to {temp_file_path}")
+                file_size = 0
                 with open(temp_file_path, "wb") as buffer:
                     content = await file.read()
+                    file_size = len(content)
                     buffer.write(content)
+                self.logger.info(f"File saved successfully, size: {file_size / 1024 / 1024:.2f} MB")
+                
+                # Initial progress update
+                initial_progress = StreamingProgress(
+                    task_id=task_id,
+                    progress=5.0,
+                    current_step="File uploaded successfully",
+                    step_num=1,
+                    total_steps=6,
+                    details=f"Processing {actual_doc_name} ({file_size / 1024 / 1024:.2f} MB)"
+                )
+                self.latest_progress[task_id] = initial_progress
+                self.logger.info(f"Task {task_id}: {initial_progress.current_step}")
                 
                 # Ensure model is loaded
                 if not self.model_manager.model_loaded:
+                    self.logger.info(f"Task {task_id}: Model not loaded, initializing...")
                     async for progress in self.model_manager.load_model():
+                        progress.task_id = task_id
                         self.latest_progress[task_id] = progress
+                        self.logger.info(f"Task {task_id}: Model loading - {progress.current_step} ({progress.progress:.1f}%)")
 
                 # Extract PDF pages
+                self.logger.info(f"Task {task_id}: Starting PDF page extraction")
+                images = []
+                metadata = []
                 async for progress in self.pdf_processor.extract_pages(
                     temp_file_path
                 ):
                     progress.task_id = task_id
                     self.latest_progress[task_id] = progress
-
-                # Mock data for demo
-                mock_images = [Image.new("RGB", (800, 600)) for _ in range(3)]
-                mock_metadata = [
-                    {
-                        "page_num": i + 1,
-                        "doc_name": actual_doc_name,
-                        "text_content": f"Page {i + 1} content",
-                    }
-                    for i in range(3)
-                ]
+                    self.logger.info(f"Task {task_id}: PDF extraction - {progress.current_step} ({progress.progress:.1f}%)")
+                    # In real implementation, collect the actual extracted data
+                    if progress.progress == 100.0:
+                        # Mock data for demo - replace with actual extracted data
+                        images = [Image.new("RGB", (800, 600)) for _ in range(3)]
+                        metadata = [
+                            {
+                                "page_num": i + 1,
+                                "doc_name": actual_doc_name,
+                                "text_content": f"Page {i + 1} content",
+                            }
+                            for i in range(3)
+                        ]
+                        self.logger.info(f"Task {task_id}: Extracted {len(images)} pages")
 
                 # Encode pages
-                async for progress in self.model_manager.encode_pages(mock_images):
+                self.logger.info(f"Task {task_id}: Starting ColPali encoding for {len(images)} pages")
+                embeddings = []
+                async for progress in self.model_manager.encode_pages(images):
                     progress.task_id = task_id
                     self.latest_progress[task_id] = progress
+                    self.logger.info(f"Task {task_id}: Encoding - {progress.current_step} ({progress.progress:.1f}%)")
+                    if progress.throughput:
+                        self.logger.info(f"Task {task_id}: Encoding throughput: {progress.throughput}")
+                    # In real implementation, collect the actual embeddings
+                    if progress.progress == 100.0:
+                        embeddings = [torch.randn(1, 128) for _ in range(len(images))]
+                        self.logger.info(f"Task {task_id}: Generated {len(embeddings)} embeddings")
 
                 # Store in database
+                self.logger.info(f"Task {task_id}: Storing embeddings in LanceDB")
                 async for progress in self.db_manager.store_embeddings(
-                    [torch.randn(1, 128) for _ in range(3)], mock_metadata
+                    embeddings, metadata
                 ):
                     progress.task_id = task_id
                     self.latest_progress[task_id] = progress
+                    self.logger.info(f"Task {task_id}: Storage - {progress.current_step} ({progress.progress:.1f}%)")
+
+                # Final completion
+                final_progress = StreamingProgress(
+                    task_id=task_id,
+                    progress=100.0,
+                    current_step="Ingestion completed successfully",
+                    step_num=6,
+                    total_steps=6,
+                    details=f"Document '{actual_doc_name}' ready for search",
+                    throughput=f"{len(images)} pages processed"
+                )
+                self.latest_progress[task_id] = final_progress
+                self.logger.info(f"Task {task_id}: COMPLETED - {len(images)} pages indexed for document '{actual_doc_name}'")
 
                 return {
                     "task_id": task_id,
                     "status": "completed",
                     "message": f"Successfully ingested {actual_doc_name}",
-                    "pages_processed": len(mock_images),
+                    "pages_processed": len(images),
                 }
             
             except Exception as e:
+                self.logger.error(f"Task {task_id}: FAILED - {str(e)}", exc_info=True)
                 error_progress = StreamingProgress(
                     task_id=task_id,
                     progress=0.0,
@@ -632,26 +693,44 @@ class ColPaliHTTPServer:
                 # Clean up temporary file
                 try:
                     Path(temp_file_path).unlink(missing_ok=True)
-                except:
-                    pass
+                    self.logger.info(f"Task {task_id}: Cleaned up temporary file {temp_file_path}")
+                except Exception as cleanup_error:
+                    self.logger.warning(f"Task {task_id}: Failed to cleanup temp file: {cleanup_error}")
 
         @self.app.post("/search")
         async def search_documents(request: SearchRequest):
             """Search documents"""
             task_id = f"search_{uuid.uuid4().hex[:8]}"
+            self.logger.info(f"Starting search task {task_id} for query: '{request.query}' (top_k={request.top_k})")
 
             try:
+                # Initial progress
+                initial_progress = StreamingProgress(
+                    task_id=task_id,
+                    progress=5.0,
+                    current_step="Search initiated",
+                    step_num=1,
+                    total_steps=4,
+                    details=f"Query: '{request.query[:50]}...'"
+                )
+                self.latest_progress[task_id] = initial_progress
+                self.logger.info(f"Task {task_id}: {initial_progress.current_step}")
+                
                 # Encode query
+                self.logger.info(f"Task {task_id}: Encoding search query")
                 async for progress in self.model_manager.encode_query(request.query):
                     progress.task_id = task_id
                     self.latest_progress[task_id] = progress
+                    self.logger.info(f"Task {task_id}: Query encoding - {progress.current_step} ({progress.progress:.1f}%)")
 
                 # Search database
+                self.logger.info(f"Task {task_id}: Performing vector similarity search")
                 async for progress in self.db_manager.search_embeddings(
                     torch.randn(1, 128), request.top_k
                 ):
                     progress.task_id = task_id
                     self.latest_progress[task_id] = progress
+                    self.logger.info(f"Task {task_id}: Vector search - {progress.current_step} ({progress.progress:.1f}%)")
 
                 # Mock results for demo
                 results = [
@@ -663,6 +742,18 @@ class ColPaliHTTPServer:
                     }
                     for i in range(min(request.top_k, 3))
                 ]
+                
+                # Final completion
+                final_progress = StreamingProgress(
+                    task_id=task_id,
+                    progress=100.0,
+                    current_step="Search completed",
+                    step_num=4,
+                    total_steps=4,
+                    details=f"Found {len(results)} relevant matches"
+                )
+                self.latest_progress[task_id] = final_progress
+                self.logger.info(f"Task {task_id}: COMPLETED - Found {len(results)} results for query '{request.query}'")
 
                 return {
                     "task_id": task_id,
@@ -672,6 +763,7 @@ class ColPaliHTTPServer:
                 }
 
             except Exception as e:
+                self.logger.error(f"Task {task_id}: FAILED - {str(e)}", exc_info=True)
                 error_progress = StreamingProgress(
                     task_id=task_id,
                     progress=0.0,
@@ -687,11 +779,14 @@ class ColPaliHTTPServer:
         async def get_task_progress(task_id: str):
             """Get latest progress for a task"""
             if task_id in self.latest_progress:
+                progress = self.latest_progress[task_id]
+                self.logger.debug(f"Progress requested for task {task_id}: {progress.current_step} ({progress.progress:.1f}%)")
                 return {
                     "task_id": task_id,
-                    "progress": self.latest_progress[task_id].to_dict(),
+                    "progress": progress.to_dict(),
                 }
             else:
+                self.logger.warning(f"Progress requested for unknown task: {task_id}")
                 raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
 
         @self.app.get("/tasks")
@@ -708,15 +803,57 @@ class ColPaliHTTPServer:
                     if progress.progress < 100.0 and not progress.error
                 ]
             }
+            
+        @self.app.get("/logs")
+        async def get_recent_logs():
+            """Get recent server logs"""
+            try:
+                log_file_path = Path("colpali_server.log")
+                if log_file_path.exists():
+                    # Read last 100 lines of log file
+                    with open(log_file_path, 'r') as f:
+                        lines = f.readlines()
+                        recent_lines = lines[-100:] if len(lines) > 100 else lines
+                    
+                    return {
+                        "logs": [
+                            {
+                                "timestamp": line.split(' - ')[0] if ' - ' in line else "",
+                                "level": line.split(' - ')[2] if len(line.split(' - ')) > 2 else "INFO",
+                                "message": ' - '.join(line.split(' - ')[3:]).strip() if len(line.split(' - ')) > 3 else line.strip()
+                            }
+                            for line in recent_lines if line.strip()
+                        ][-50:]  # Last 50 log entries
+                    }
+                else:
+                    return {"logs": []}
+            except Exception as e:
+                self.logger.error(f"Failed to read log file: {str(e)}")
+                return {"logs": [], "error": "Failed to read server logs"}
 
     async def start_server(self, host: str = "localhost", port: int = 8000):
         """Start the HTTP server"""
-        await self.db_manager.initialize()
-        self.logger.info(f"Starting ColPali HTTP Server on {host}:{port}")
-
-        config = uvicorn.Config(self.app, host=host, port=port, log_level="info")
-        server = uvicorn.Server(config)
-        await server.serve()
+        try:
+            await self.db_manager.initialize()
+            self.logger.info(f"LanceDB initialized at: {self.db_manager.db_path}")
+            
+            self.logger.info(f"🚀 Starting ColPali HTTP Server on {host}:{port}")
+            self.logger.info(f"📊 Server health endpoint: http://{host}:{port}/health")
+            self.logger.info(f"📝 Server logs being written to: colpali_server.log")
+            
+            config = uvicorn.Config(
+                self.app, 
+                host=host, 
+                port=port, 
+                log_level="info",
+                access_log=True
+            )
+            server = uvicorn.Server(config)
+            await server.serve()
+            
+        except Exception as e:
+            self.logger.error(f"Failed to start server: {str(e)}", exc_info=True)
+            raise
 
 
 # Global server instance

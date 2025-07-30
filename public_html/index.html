@@ -309,6 +309,12 @@
             border: 1px solid rgba(99, 102, 241, 0.3);
         }
 
+        .status-warning {
+            background: rgba(245, 158, 11, 0.15);
+            color: var(--warning-color);
+            border: 1px solid rgba(245, 158, 11, 0.3);
+        }
+
         .results-container {
             display: grid;
             gap: 1.5rem;
@@ -587,6 +593,133 @@
             100% { background-position: 200% 0; }
         }
 
+        .logs-container {
+            margin-top: 1.5rem;
+            background: var(--bg-color);
+            border: 1px solid var(--border-color);
+            border-radius: 0.75rem;
+            overflow: hidden;
+        }
+
+        .logs-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 1rem;
+            background: var(--surface-hover);
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .logs-header h4 {
+            margin: 0;
+            font-size: 0.95rem;
+            font-weight: 600;
+            color: var(--text-primary);
+        }
+
+        .logs-toggle {
+            background: none;
+            border: none;
+            color: var(--text-secondary);
+            cursor: pointer;
+            font-size: 0.9rem;
+            padding: 0.25rem;
+            border-radius: 0.25rem;
+            transition: all 0.2s ease;
+        }
+
+        .logs-toggle:hover {
+            background: var(--accent-light);
+            color: var(--accent-color);
+        }
+
+        .logs-content {
+            max-height: 300px;
+            overflow-y: auto;
+            transition: all 0.3s ease;
+        }
+
+        .logs-content.collapsed {
+            max-height: 0;
+            overflow: hidden;
+        }
+
+        .logs-list {
+            padding: 0;
+        }
+
+        .log-entry {
+            display: flex;
+            align-items: flex-start;
+            gap: 1rem;
+            padding: 0.75rem 1rem;
+            border-bottom: 1px solid var(--border-color);
+            font-size: 0.9rem;
+            transition: background-color 0.2s ease;
+        }
+
+        .log-entry:last-child {
+            border-bottom: none;
+        }
+
+        .log-entry:hover {
+            background: var(--surface-hover);
+        }
+
+        .log-time {
+            color: var(--text-muted);
+            font-size: 0.8rem;
+            min-width: 80px;
+            font-family: 'Monaco', 'Menlo', monospace;
+        }
+
+        .log-message {
+            color: var(--text-secondary);
+            flex: 1;
+            word-break: break-word;
+        }
+
+        .log-info .log-message {
+            color: var(--text-secondary);
+        }
+
+        .log-success .log-message {
+            color: var(--success-color);
+        }
+
+        .log-error .log-message {
+            color: var(--error-color);
+        }
+
+        .log-warning .log-message {
+            color: var(--warning-color);
+        }
+
+        .log-level {
+            color: var(--text-muted);
+            font-size: 0.8rem;
+            min-width: 60px;
+            font-family: 'Monaco', 'Menlo', monospace;
+            font-weight: 600;
+        }
+
+        .logs-content::-webkit-scrollbar {
+            width: 6px;
+        }
+
+        .logs-content::-webkit-scrollbar-track {
+            background: var(--border-color);
+        }
+
+        .logs-content::-webkit-scrollbar-thumb {
+            background: var(--border-light);
+            border-radius: 3px;
+        }
+
+        .logs-content::-webkit-scrollbar-thumb:hover {
+            background: var(--text-muted);
+        }
+
         .refresh-btn {
             margin-bottom: 1.5rem;
         }
@@ -741,10 +874,17 @@
             <div class="panel">
                 <h2>Document Management</h2>
                 
-                <button id="refreshDocsBtn" class="btn btn-secondary btn-small refresh-btn">
-                    <span id="refreshBtnText">Refresh List</span>
-                    <div id="refreshSpinner" class="spinner hidden"></div>
-                </button>
+                <div style="display: flex; gap: 1rem; margin-bottom: 1.5rem;">
+                    <button id="refreshDocsBtn" class="btn btn-secondary btn-small">
+                        <span id="refreshBtnText">Refresh List</span>
+                        <div id="refreshSpinner" class="spinner hidden"></div>
+                    </button>
+                    
+                    <button id="viewServerLogsBtn" class="btn btn-secondary btn-small">
+                        <span id="logsBtnText">View Server Logs</span>
+                        <div id="logsSpinner" class="spinner hidden"></div>
+                    </button>
+                </div>
 
                 <div id="documentsContainer">
                     <div class="empty-state">
@@ -754,6 +894,20 @@
                 </div>
 
                 <div id="documentsStatus"></div>
+                
+                <div id="serverLogsContainer" style="display: none; margin-top: 2rem;">
+                    <div class="logs-container">
+                        <div class="logs-header">
+                            <h4>🗞️ Server Logs</h4>
+                            <button class="logs-toggle" onclick="document.getElementById('serverLogsContainer').style.display='none'">
+                                ✖
+                            </button>
+                        </div>
+                        <div class="logs-content" style="max-height: 400px;">
+                            <div id="serverLogsList" class="logs-list"></div>
+                        </div>
+                    </div>
+                </div>
             </div>
         </div>
     </div>
@@ -841,6 +995,7 @@
                 document.getElementById('ingestBtn').addEventListener('click', () => this.ingestDocument());
                 document.getElementById('searchBtn').addEventListener('click', () => this.searchDocuments());
                 document.getElementById('refreshDocsBtn').addEventListener('click', () => this.loadDocuments());
+                document.getElementById('viewServerLogsBtn').addEventListener('click', () => this.viewServerLogs());
 
                 // Enter key for search
                 document.getElementById('searchQuery').addEventListener('keypress', (e) => {
@@ -899,6 +1054,10 @@
 
                 this.setButtonLoading('ingestBtn', 'ingestBtnText', 'ingestSpinner', true);
                 this.showProgress('ingestProgress', 0, 'Uploading and processing document...');
+                
+                // Add logs container
+                this.showLogsContainer('ingestStatus');
+                this.addLogEntry('ingestStatus', `Starting ingestion of "${docName}"`, 'info');
 
                 try {
                     const response = await fetch(`${this.apiBase}/ingest`, {
@@ -907,13 +1066,17 @@
                     });
 
                     if (!response.ok) {
-                        throw new Error(`Processing failed with status: ${response.status}`);
+                        const errorText = await response.text();
+                        throw new Error(`Processing failed with status: ${response.status} - ${errorText}`);
                     }
 
                     const result = await response.json();
+                    this.addLogEntry('ingestStatus', `Task ID: ${result.task_id}`, 'info');
                     
-                    await this.trackProgress(result.task_id, 'ingest');
+                    // Start real-time progress tracking
+                    await this.trackProgressRealTime(result.task_id, 'ingest');
                     
+                    this.addLogEntry('ingestStatus', `✅ Document "${docName}" processed successfully (${result.pages_processed} pages indexed)`, 'success');
                     this.showStatus('ingestStatus', `Document "${docName}" processed successfully (${result.pages_processed} pages indexed)`, 'success');
                     
                     // Refresh documents list and clear form
@@ -924,10 +1087,11 @@
                     
                 } catch (error) {
                     console.error('Ingestion error:', error);
+                    this.addLogEntry('ingestStatus', `❌ Processing failed: ${error.message}`, 'error');
                     this.showStatus('ingestStatus', `Processing failed: ${error.message}`, 'error');
                 } finally {
                     this.setButtonLoading('ingestBtn', 'ingestBtnText', 'ingestSpinner', false);
-                    this.hideProgress('ingestProgress');
+                    setTimeout(() => this.hideProgress('ingestProgress'), 1000);
                 }
             }
 
@@ -950,6 +1114,10 @@
 
                 this.setButtonLoading('searchBtn', 'searchBtnText', 'searchSpinner', true);
                 this.showProgress('searchProgress', 0, 'Processing search query...');
+                
+                // Add logs container
+                this.showLogsContainer('searchStatus');
+                this.addLogEntry('searchStatus', `Starting search for: "${query}" (top ${topK} results)`, 'info');
 
                 try {
                     const response = await fetch(`${this.apiBase}/search`, {
@@ -964,23 +1132,28 @@
                     });
 
                     if (!response.ok) {
-                        throw new Error(`Search failed with status: ${response.status}`);
+                        const errorText = await response.text();
+                        throw new Error(`Search failed with status: ${response.status} - ${errorText}`);
                     }
 
                     const result = await response.json();
+                    this.addLogEntry('searchStatus', `Task ID: ${result.task_id}`, 'info');
                     
-                    await this.trackProgress(result.task_id, 'search');
+                    // Start real-time progress tracking
+                    await this.trackProgressRealTime(result.task_id, 'search');
                     
                     this.displayResults(result.results);
+                    this.addLogEntry('searchStatus', `✅ Search completed - found ${result.results.length} relevant matches`, 'success');
                     this.showStatus('searchStatus', `Search completed - found ${result.results.length} relevant matches`, 'success');
                     
                 } catch (error) {
                     console.error('Search error:', error);
+                    this.addLogEntry('searchStatus', `❌ Search failed: ${error.message}`, 'error');
                     this.showStatus('searchStatus', `Search failed: ${error.message}`, 'error');
                     this.hideResults();
                 } finally {
                     this.setButtonLoading('searchBtn', 'searchBtnText', 'searchSpinner', false);
-                    this.hideProgress('searchProgress');
+                    setTimeout(() => this.hideProgress('searchProgress'), 1000);
                 }
             }
 
@@ -1178,28 +1351,62 @@ This would open a sophisticated document viewer with:
                 document.getElementById('resultsContainer').style.display = 'none';
             }
 
-            async trackProgress(taskId, type) {
+            async trackProgressRealTime(taskId, type) {
+                const statusId = type === 'ingest' ? 'ingestStatus' : 'searchStatus';
                 const progressId = type === 'ingest' ? 'ingestProgress' : 'searchProgress';
-                const progressFillId = type === 'ingest' ? 'ingestProgressFill' : 'searchProgressFill';
-                const progressTextId = type === 'ingest' ? 'ingestProgressText' : 'searchProgressText';
-
-                const steps = type === 'ingest' ? [
-                    { progress: 15, text: 'Initializing document processing...' },
-                    { progress: 35, text: 'Extracting pages and content...' },
-                    { progress: 55, text: 'Generating AI embeddings...' },
-                    { progress: 75, text: 'Optimizing vector storage...' },
-                    { progress: 90, text: 'Finalizing indexing...' },
-                    { progress: 100, text: 'Document processing complete' }
-                ] : [
-                    { progress: 25, text: 'Processing search query...' },
-                    { progress: 50, text: 'Generating query embeddings...' },
-                    { progress: 75, text: 'Computing semantic similarity...' },
-                    { progress: 100, text: 'Search results compiled' }
-                ];
-
-                for (const step of steps) {
-                    this.showProgress(progressId, step.progress, step.text);
-                    await new Promise(resolve => setTimeout(resolve, 600));
+                
+                let isComplete = false;
+                let pollCount = 0;
+                const maxPolls = 120; // 2 minutes max
+                
+                this.addLogEntry(statusId, `🔄 Starting real-time progress tracking for task ${taskId}`, 'info');
+                
+                while (!isComplete && pollCount < maxPolls) {
+                    try {
+                        const response = await fetch(`${this.apiBase}/progress/${taskId}`);
+                        
+                        if (response.ok) {
+                            const data = await response.json();
+                            const progress = data.progress;
+                            
+                            // Update progress bar
+                            this.showProgress(progressId, progress.progress, progress.current_step);
+                            
+                            // Add detailed log entry
+                            const logMessage = `[${progress.step_num}/${progress.total_steps}] ${progress.current_step}`;
+                            const details = progress.details ? ` - ${progress.details}` : '';
+                            const throughput = progress.throughput ? ` (${progress.throughput})` : '';
+                            const eta = progress.eta_seconds ? ` - ETA: ${progress.eta_seconds}s` : '';
+                            
+                            this.addLogEntry(statusId, `${logMessage}${details}${throughput}${eta}`, 'info');
+                            
+                            // Check for completion or error
+                            if (progress.error) {
+                                this.addLogEntry(statusId, `❌ Error: ${progress.error}`, 'error');
+                                isComplete = true;
+                            } else if (progress.progress >= 100) {
+                                this.addLogEntry(statusId, `✅ Task completed successfully`, 'success');
+                                isComplete = true;
+                            }
+                        } else if (response.status === 404) {
+                            this.addLogEntry(statusId, `⚠️ Task ${taskId} not found on server`, 'warning');
+                            break;
+                        } else {
+                            this.addLogEntry(statusId, `⚠️ Failed to fetch progress (${response.status})`, 'warning');
+                        }
+                    } catch (error) {
+                        this.addLogEntry(statusId, `⚠️ Progress fetch error: ${error.message}`, 'warning');
+                    }
+                    
+                    pollCount++;
+                    
+                    if (!isComplete) {
+                        await new Promise(resolve => setTimeout(resolve, 500)); // Poll every 500ms
+                    }
+                }
+                
+                if (pollCount >= maxPolls) {
+                    this.addLogEntry(statusId, `⏰ Progress tracking timed out after ${maxPolls * 0.5}s`, 'warning');
                 }
             }
 
@@ -1211,10 +1418,141 @@ This would open a sophisticated document viewer with:
                     year: 'numeric'
                 });
             }
+            
+            async viewServerLogs() {
+                this.setButtonLoading('viewServerLogsBtn', 'logsBtnText', 'logsSpinner', true);
+                
+                try {
+                    const response = await fetch(`${this.apiBase}/logs`);
+                    
+                    if (!response.ok) {
+                        throw new Error(`Failed to fetch logs: ${response.status}`);
+                    }
+                    
+                    const data = await response.json();
+                    
+                    if (data.error) {
+                        throw new Error(data.error);
+                    }
+                    
+                    this.displayServerLogs(data.logs);
+                    document.getElementById('serverLogsContainer').style.display = 'block';
+                    
+                } catch (error) {
+                    console.error('Error fetching server logs:', error);
+                    this.showStatus('documentsStatus', `Failed to fetch server logs: ${error.message}`, 'error');
+                } finally {
+                    this.setButtonLoading('viewServerLogsBtn', 'logsBtnText', 'logsSpinner', false);
+                }
+            }
+            
+            displayServerLogs(logs) {
+                const logsList = document.getElementById('serverLogsList');
+                
+                if (!logs || logs.length === 0) {
+                    logsList.innerHTML = '<div class="empty-state"><p>No server logs available</p></div>';
+                    return;
+                }
+                
+                logsList.innerHTML = logs.map(log => {
+                    const logType = this.getLogType(log.level);
+                    return `
+                        <div class="log-entry log-${logType}">
+                            <span class="log-time">${this.formatLogTimestamp(log.timestamp)}</span>
+                            <span class="log-level">[${log.level}]</span>
+                            <span class="log-message">${log.message}</span>
+                        </div>
+                    `;
+                }).join('');
+                
+                // Auto-scroll to bottom
+                logsList.scrollTop = logsList.scrollHeight;
+            }
+            
+            getLogType(level) {
+                switch(level.toUpperCase()) {
+                    case 'ERROR': return 'error';
+                    case 'WARNING': case 'WARN': return 'warning';
+                    case 'INFO': return 'info';
+                    case 'DEBUG': return 'info';
+                    default: return 'info';
+                }
+            }
+            
+            formatLogTimestamp(timestamp) {
+                try {
+                    const date = new Date(timestamp);
+                    return date.toLocaleTimeString();
+                } catch {
+                    return timestamp.split(' ')[1] || timestamp; // Extract time part if possible
+                }
+            }
 
             showStatus(elementId, message, type) {
                 const element = document.getElementById(elementId);
-                element.innerHTML = `<div class="status-indicator status-${type}">${message}</div>`;
+                const existingLogs = element.querySelector('.logs-container');
+                
+                if (existingLogs) {
+                    // Keep existing logs and add status above them
+                    const statusDiv = element.querySelector('.status-indicator') || document.createElement('div');
+                    statusDiv.className = `status-indicator status-${type}`;
+                    statusDiv.textContent = message;
+                    
+                    if (!element.querySelector('.status-indicator')) {
+                        element.insertBefore(statusDiv, existingLogs);
+                    }
+                } else {
+                    element.innerHTML = `<div class="status-indicator status-${type}">${message}</div>`;
+                }
+            }
+            
+            showLogsContainer(elementId) {
+                const element = document.getElementById(elementId);
+                
+                if (!element.querySelector('.logs-container')) {
+                    const logsContainer = document.createElement('div');
+                    logsContainer.className = 'logs-container';
+                    logsContainer.innerHTML = `
+                        <div class="logs-header">
+                            <h4>📋 Processing Logs</h4>
+                            <button class="logs-toggle" onclick="this.parentElement.parentElement.querySelector('.logs-content').classList.toggle('collapsed')">
+                                ▼
+                            </button>
+                        </div>
+                        <div class="logs-content">
+                            <div class="logs-list"></div>
+                        </div>
+                    `;
+                    element.appendChild(logsContainer);
+                }
+            }
+            
+            addLogEntry(elementId, message, type = 'info') {
+                const element = document.getElementById(elementId);
+                const logsContainer = element.querySelector('.logs-container');
+                
+                if (logsContainer) {
+                    const logsList = logsContainer.querySelector('.logs-list');
+                    const timestamp = new Date().toLocaleTimeString();
+                    
+                    const logEntry = document.createElement('div');
+                    logEntry.className = `log-entry log-${type}`;
+                    logEntry.innerHTML = `
+                        <span class="log-time">${timestamp}</span>
+                        <span class="log-message">${message}</span>
+                    `;
+                    
+                    logsList.appendChild(logEntry);
+                    
+                    // Auto-scroll to bottom
+                    logsList.scrollTop = logsList.scrollHeight;
+                    
+                    // Limit log entries to prevent memory issues
+                    const logEntries = logsList.querySelectorAll('.log-entry');
+                    if (logEntries.length > 50) {
+                        logEntries[0].remove();
+                    }
+                }
             }
 
             showProgress(progressId, percent, text) {
