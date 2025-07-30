@@ -186,8 +186,6 @@ class ColPaliModelManager:
             throughput=f"Average: {total_pages / elapsed:.1f} pages/sec",
         )
 
-        return embeddings
-
     async def encode_query(self, query: str) -> AsyncGenerator[StreamingProgress, None]:
         """Encode search query with streaming progress"""
         task_id = f"query_{uuid.uuid4().hex[:8]}"
@@ -237,8 +235,6 @@ class ColPaliModelManager:
             total_steps=3,
             details="Ready for similarity search",
         )
-
-        return query_embedding
 
 
 class LanceDBManager:
@@ -393,8 +389,6 @@ class LanceDBManager:
             details=f"Found {len(mock_results)} relevant results",
         )
 
-        return mock_results
-
 
 class PDFProcessor:
     """Handles PDF processing and page extraction"""
@@ -428,7 +422,7 @@ class PDFProcessor:
                 total_steps=3,
                 error=str(e),
             )
-            return [], []
+            return
 
         yield StreamingProgress(
             task_id=task_id,
@@ -485,8 +479,6 @@ class PDFProcessor:
             total_steps=3,
             details=f"Extracted {len(images)} pages successfully",
         )
-
-        return images, metadata
 
 
 class ColPaliHTTPServer:
