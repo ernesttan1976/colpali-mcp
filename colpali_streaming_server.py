@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-ColPali MCP Server with Real-time Streaming Progress
+ColPali Long-Running HTTP Server
 Supports Apple Silicon M4 with MPS acceleration
 """
 
@@ -9,17 +9,19 @@ import json
 import logging
 import time
 import uuid
+import io
 from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Dict, List, Optional, AsyncGenerator, Any
-from contextlib import asynccontextmanager
 
 import torch
 import lancedb
 from PIL import Image
 import fitz  # PyMuPDF
-from mcp import Server
-from mcp.server.stdio import stdio_server
+from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
+import uvicorn
 
 # Mock ColPali imports (replace with actual imports)
 # from colpali_engine import ColPaliModel, ColPaliProcessor
@@ -48,6 +50,22 @@ class SearchResult:
     score: float
     snippet: str
     image_path: Optional[str] = None
+
+
+# Pydantic models for API
+class IngestRequest(BaseModel):
+    file_path: str
+    doc_name: Optional[str] = None
+
+
+class SearchRequest(BaseModel):
+    query: str
+    top_k: int = 5
+
+
+class TaskProgressResponse(BaseModel):
+    task_id: str
+    progress: Dict[str, Any]
 
 
 class ColPaliModelManager:
@@ -471,16 +489,16 @@ class PDFProcessor:
         return images, metadata
 
 
-class ColPaliStreamingServer:
-    """Main MCP Server with streaming capabilities"""
+class ColPaliHTTPServer:
+    """Main HTTP Server - Long Running"""
 
     def __init__(self):
-        self.server = Server("colpali-streaming")
+        self.app = FastAPI(title="ColPali HTTP Server", version="1.0.0")
         self.model_manager = ColPaliModelManager()
         self.db_manager = LanceDBManager()
         self.pdf_processor = PDFProcessor()
 
-        # Progress tracking
+        # Progress tracking - persistent across requests
         self.active_tasks: Dict[str, AsyncGenerator] = {}
         self.latest_progress: Dict[str, StreamingProgress] = {}
 
@@ -488,271 +506,205 @@ class ColPaliStreamingServer:
         logging.basicConfig(level=logging.INFO)
         self.logger = logging.getLogger(__name__)
 
-    async def setup_tools(self):
-        """Setup MCP tools"""
+        # Setup routes
+        self.setup_routes()
 
-        @self.server.list_tools()
-        async def list_tools():
-            return [
-                {
-                    "name": "ingest_pdf_stream",
-                    "description": "Ingest PDF with real-time progress streaming. Returns task_id for monitoring.",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "file_path": {
-                                "type": "string",
-                                "description": "Path to PDF file",
-                            },
-                            "doc_name": {
-                                "type": "string",
-                                "description": "Optional document name (defaults to filename)",
-                            },
-                        },
-                        "required": ["file_path"],
-                    },
-                },
-                {
-                    "name": "search_documents_stream",
-                    "description": "Search documents with real-time progress updates",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "query": {
-                                "type": "string",
-                                "description": "Search query text",
-                            },
-                            "top_k": {
-                                "type": "integer",
-                                "description": "Number of results to return",
-                                "default": 5,
-                            },
-                        },
-                        "required": ["query"],
-                    },
-                },
-                {
-                    "name": "get_task_progress",
-                    "description": "Get latest progress for a streaming task",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "task_id": {
-                                "type": "string",
-                                "description": "Task ID from streaming operation",
-                            }
-                        },
-                        "required": ["task_id"],
-                    },
-                },
-                {
-                    "name": "list_active_tasks",
-                    "description": "List all currently active streaming tasks",
-                    "inputSchema": {"type": "object", "properties": {}},
-                },
-                {
-                    "name": "initialize_colpali",
-                    "description": "Initialize ColPali model with progress tracking",
-                    "inputSchema": {"type": "object", "properties": {}},
-                },
-            ]
+    def setup_routes(self):
+        """Setup FastAPI routes"""
 
-        @self.server.call_tool()
-        async def call_tool(name: str, arguments: Dict[str, Any]):
-            try:
-                if name == "initialize_colpali":
-                    return await self.initialize_model_stream()
-                elif name == "ingest_pdf_stream":
-                    return await self.ingest_pdf_stream(**arguments)
-                elif name == "search_documents_stream":
-                    return await self.search_documents_stream(**arguments)
-                elif name == "get_task_progress":
-                    return await self.get_task_progress(arguments["task_id"])
-                elif name == "list_active_tasks":
-                    return await self.list_active_tasks()
-                else:
-                    return {"error": f"Unknown tool: {name}"}
-
-            except Exception as e:
-                self.logger.error(f"Error in {name}: {str(e)}")
-                return {"error": str(e)}
-
-    async def initialize_model_stream(self):
-        """Initialize ColPali model with streaming progress"""
-        task_id = f"init_{uuid.uuid4().hex[:8]}"
-        progress_updates = []
-
-        try:
-            async for progress in self.model_manager.load_model():
-                self.latest_progress[task_id] = progress
-                progress_updates.append(progress.to_dict())
-
+        @self.app.get("/health")
+        async def health_check():
             return {
-                "task_id": task_id,
-                "status": "completed",
-                "final_progress": progress_updates[-1] if progress_updates else None,
-                "message": "ColPali model initialized successfully",
+                "status": "healthy",
+                "model_loaded": self.model_manager.model_loaded,
+                "active_tasks": len(self.active_tasks),
             }
 
-        except Exception as e:
-            error_progress = StreamingProgress(
-                task_id=task_id,
-                progress=0.0,
-                current_step="Initialization failed",
-                step_num=0,
-                total_steps=1,
-                error=str(e),
-            )
-            self.latest_progress[task_id] = error_progress
-            return {"task_id": task_id, "status": "failed", "error": str(e)}
+        @self.app.post("/initialize")
+        async def initialize_model():
+            """Initialize ColPali model"""
+            task_id = f"init_{uuid.uuid4().hex[:8]}"
+            progress_updates = []
 
-    async def ingest_pdf_stream(self, file_path: str, doc_name: Optional[str] = None):
-        """Stream PDF ingestion progress"""
-        task_id = f"ingest_{uuid.uuid4().hex[:8]}"
-        doc_name = doc_name or Path(file_path).stem
-
-        try:
-            # Ensure model is loaded
-            if not self.model_manager.model_loaded:
+            try:
                 async for progress in self.model_manager.load_model():
                     self.latest_progress[task_id] = progress
+                    progress_updates.append(progress.to_dict())
 
-            # Extract PDF pages
-            async for progress in self.pdf_processor.extract_pages(file_path):
-                progress.task_id = task_id
-                self.latest_progress[task_id] = progress
-
-            # This would normally return the images/metadata
-            # For demo, we'll use mock data
-            mock_images = [Image.new("RGB", (800, 600)) for _ in range(3)]
-            mock_metadata = [
-                {
-                    "page_num": i + 1,
-                    "doc_name": doc_name,
-                    "text_content": f"Page {i + 1} content",
-                }
-                for i in range(3)
-            ]
-
-            # Encode pages
-            async for progress in self.model_manager.encode_pages(mock_images):
-                progress.task_id = task_id
-                self.latest_progress[task_id] = progress
-
-            # Store in database
-            async for progress in self.db_manager.store_embeddings(
-                [torch.randn(1, 128) for _ in range(3)], mock_metadata
-            ):
-                progress.task_id = task_id
-                self.latest_progress[task_id] = progress
-
-            return {
-                "task_id": task_id,
-                "status": "completed",
-                "message": f"Successfully ingested {doc_name}",
-                "pages_processed": len(mock_images),
-            }
-
-        except Exception as e:
-            error_progress = StreamingProgress(
-                task_id=task_id,
-                progress=0.0,
-                current_step="Ingestion failed",
-                step_num=0,
-                total_steps=1,
-                error=str(e),
-            )
-            self.latest_progress[task_id] = error_progress
-            return {"task_id": task_id, "status": "failed", "error": str(e)}
-
-    async def search_documents_stream(self, query: str, top_k: int = 5):
-        """Stream document search progress"""
-        task_id = f"search_{uuid.uuid4().hex[:8]}"
-
-        try:
-            # Encode query
-            async for progress in self.model_manager.encode_query(query):
-                progress.task_id = task_id
-                self.latest_progress[task_id] = progress
-
-            # Search database
-            async for progress in self.db_manager.search_embeddings(
-                torch.randn(1, 128), top_k
-            ):
-                progress.task_id = task_id
-                self.latest_progress[task_id] = progress
-
-            # Mock results for demo
-            results = [
-                {
-                    "page_num": i + 1,
-                    "doc_name": "sample_document.pdf",
-                    "score": 0.95 - i * 0.1,
-                    "snippet": f"Relevant content from page {i + 1}...",
-                }
-                for i in range(min(top_k, 3))
-            ]
-
-            return {
-                "task_id": task_id,
-                "status": "completed",
-                "results": results,
-                "message": f"Found {len(results)} relevant results",
-            }
-
-        except Exception as e:
-            error_progress = StreamingProgress(
-                task_id=task_id,
-                progress=0.0,
-                current_step="Search failed",
-                step_num=0,
-                total_steps=1,
-                error=str(e),
-            )
-            self.latest_progress[task_id] = error_progress
-            return {"task_id": task_id, "status": "failed", "error": str(e)}
-
-    async def get_task_progress(self, task_id: str):
-        """Get latest progress for a task"""
-        if task_id in self.latest_progress:
-            return {
-                "task_id": task_id,
-                "progress": self.latest_progress[task_id].to_dict(),
-            }
-        else:
-            return {"error": f"Task {task_id} not found"}
-
-    async def list_active_tasks(self):
-        """List all active tasks"""
-        return {
-            "active_tasks": [
-                {
+                return {
                     "task_id": task_id,
-                    "current_step": progress.current_step,
-                    "progress": progress.progress,
+                    "status": "completed",
+                    "final_progress": progress_updates[-1]
+                    if progress_updates
+                    else None,
+                    "message": "ColPali model initialized successfully",
                 }
-                for task_id, progress in self.latest_progress.items()
-                if progress.progress < 100.0 and not progress.error
-            ]
-        }
 
-    async def run(self):
-        """Run the MCP server"""
-        await self.setup_tools()
+            except Exception as e:
+                error_progress = StreamingProgress(
+                    task_id=task_id,
+                    progress=0.0,
+                    current_step="Initialization failed",
+                    step_num=0,
+                    total_steps=1,
+                    error=str(e),
+                )
+                self.latest_progress[task_id] = error_progress
+                raise HTTPException(status_code=500, detail=str(e))
+
+        @self.app.post("/ingest")
+        async def ingest_pdf(request: IngestRequest):
+            """Ingest PDF with streaming progress"""
+            task_id = f"ingest_{uuid.uuid4().hex[:8]}"
+            doc_name = request.doc_name or Path(request.file_path).stem
+
+            try:
+                # Ensure model is loaded
+                if not self.model_manager.model_loaded:
+                    async for progress in self.model_manager.load_model():
+                        self.latest_progress[task_id] = progress
+
+                # Extract PDF pages
+                async for progress in self.pdf_processor.extract_pages(
+                    request.file_path
+                ):
+                    progress.task_id = task_id
+                    self.latest_progress[task_id] = progress
+
+                # Mock data for demo
+                mock_images = [Image.new("RGB", (800, 600)) for _ in range(3)]
+                mock_metadata = [
+                    {
+                        "page_num": i + 1,
+                        "doc_name": doc_name,
+                        "text_content": f"Page {i + 1} content",
+                    }
+                    for i in range(3)
+                ]
+
+                # Encode pages
+                async for progress in self.model_manager.encode_pages(mock_images):
+                    progress.task_id = task_id
+                    self.latest_progress[task_id] = progress
+
+                # Store in database
+                async for progress in self.db_manager.store_embeddings(
+                    [torch.randn(1, 128) for _ in range(3)], mock_metadata
+                ):
+                    progress.task_id = task_id
+                    self.latest_progress[task_id] = progress
+
+                return {
+                    "task_id": task_id,
+                    "status": "completed",
+                    "message": f"Successfully ingested {doc_name}",
+                    "pages_processed": len(mock_images),
+                }
+
+            except Exception as e:
+                error_progress = StreamingProgress(
+                    task_id=task_id,
+                    progress=0.0,
+                    current_step="Ingestion failed",
+                    step_num=0,
+                    total_steps=1,
+                    error=str(e),
+                )
+                self.latest_progress[task_id] = error_progress
+                raise HTTPException(status_code=500, detail=str(e))
+
+        @self.app.post("/search")
+        async def search_documents(request: SearchRequest):
+            """Search documents"""
+            task_id = f"search_{uuid.uuid4().hex[:8]}"
+
+            try:
+                # Encode query
+                async for progress in self.model_manager.encode_query(request.query):
+                    progress.task_id = task_id
+                    self.latest_progress[task_id] = progress
+
+                # Search database
+                async for progress in self.db_manager.search_embeddings(
+                    torch.randn(1, 128), request.top_k
+                ):
+                    progress.task_id = task_id
+                    self.latest_progress[task_id] = progress
+
+                # Mock results for demo
+                results = [
+                    {
+                        "page_num": i + 1,
+                        "doc_name": "sample_document.pdf",
+                        "score": 0.95 - i * 0.1,
+                        "snippet": f"Relevant content from page {i + 1}...",
+                    }
+                    for i in range(min(request.top_k, 3))
+                ]
+
+                return {
+                    "task_id": task_id,
+                    "status": "completed",
+                    "results": results,
+                    "message": f"Found {len(results)} relevant results",
+                }
+
+            except Exception as e:
+                error_progress = StreamingProgress(
+                    task_id=task_id,
+                    progress=0.0,
+                    current_step="Search failed",
+                    step_num=0,
+                    total_steps=1,
+                    error=str(e),
+                )
+                self.latest_progress[task_id] = error_progress
+                raise HTTPException(status_code=500, detail=str(e))
+
+        @self.app.get("/progress/{task_id}")
+        async def get_task_progress(task_id: str):
+            """Get latest progress for a task"""
+            if task_id in self.latest_progress:
+                return {
+                    "task_id": task_id,
+                    "progress": self.latest_progress[task_id].to_dict(),
+                }
+            else:
+                raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+
+        @self.app.get("/tasks")
+        async def list_active_tasks():
+            """List all active tasks"""
+            return {
+                "active_tasks": [
+                    {
+                        "task_id": task_id,
+                        "current_step": progress.current_step,
+                        "progress": progress.progress,
+                    }
+                    for task_id, progress in self.latest_progress.items()
+                    if progress.progress < 100.0 and not progress.error
+                ]
+            }
+
+    async def start_server(self, host: str = "localhost", port: int = 8000):
+        """Start the HTTP server"""
         await self.db_manager.initialize()
+        self.logger.info(f"Starting ColPali HTTP Server on {host}:{port}")
 
-        async with stdio_server() as (read_stream, write_stream):
-            self.logger.info("ColPali MCP Server starting...")
-            await self.server.run(read_stream, write_stream)
+        config = uvicorn.Config(self.app, host=host, port=port, log_level="info")
+        server = uvicorn.Server(config)
+        await server.serve()
+
+
+# Global server instance
+colpali_server = ColPaliHTTPServer()
 
 
 async def main():
     """Main entry point"""
-    server = ColPaliStreamingServer()
-    await server.run()
+    await colpali_server.start_server()
 
 
 if __name__ == "__main__":
-    import io  # Add missing import
-
     asyncio.run(main())
