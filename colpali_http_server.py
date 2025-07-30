@@ -238,6 +238,12 @@ class ColPaliModelManager:
             details="Ready for similarity search",
         )
 
+    async def encode_query_simple(self, query: str) -> torch.Tensor:
+        """Simple query encoding that returns the embedding directly"""
+        # Mock query embedding - replace with actual ColPali encoding
+        # query_embedding = self.model.encode_query(query)
+        return torch.randn(1, 128)
+
 
 class LanceDBManager:
     """Handles LanceDB operations"""
@@ -288,9 +294,26 @@ class LanceDBManager:
 
             # Perform vector similarity search
             try:
-                # Use LanceDB's native search without pandas conversion
-                search_query = self.table.search(query_embedding).limit(limit)
-                results = search_query.to_lance().to_table().to_pylist()
+                # Ensure query_embedding is in the correct format for LanceDB
+                if hasattr(query_embedding, 'numpy'):
+                    search_vector = query_embedding.numpy().flatten().tolist()
+                elif isinstance(query_embedding, torch.Tensor):
+                    search_vector = query_embedding.flatten().tolist()
+                elif hasattr(query_embedding, 'flatten'):
+                    search_vector = query_embedding.flatten()
+                    if hasattr(search_vector, 'tolist'):
+                        search_vector = search_vector.tolist()
+                else:
+                    search_vector = query_embedding
+                
+                # Ensure it's a list of numbers
+                if not isinstance(search_vector, list):
+                    search_vector = list(search_vector)
+                
+                # Use LanceDB search with proper format
+                search_query = self.table.search(search_vector).limit(limit)
+                results = search_query.to_pandas().to_dict('records')
+                
             except Exception as search_error:
                 yield StreamingProgress(
                     task_id=task_id,
@@ -684,8 +707,8 @@ class ColPaliHTTPServer:
 
                 # Get all documents from the database using LanceDB query
                 try:
-                    # Use LanceDB's native query without pandas
-                    all_docs = self.db_manager.table.to_lance().to_table().to_pylist()
+                # Use LanceDB's pandas conversion for more reliable results
+                all_docs = self.db_manager.table.to_pandas().to_dict('records')
                     
                     if not all_docs:
                         return {"documents": [], "total": 0}
@@ -1007,6 +1030,9 @@ class ColPaliHTTPServer:
             # Set query_embedding (mock for now, replace with actual)
             query_embedding = torch.randn(1, 128)
 
+            # Get the actual query embedding
+            query_embedding = await self.model_manager.encode_query_simple(request.query)
+            
             # Search database
             self.logger.info(f"Task {task_id}: Performing vector similarity search")
             search_results = None
