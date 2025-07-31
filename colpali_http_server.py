@@ -361,8 +361,8 @@ class ColPaliModelManager:
 
                                 # Process embeddings immediately to free memory
                                 for emb in batch_embeddings:
-                                    # Move to CPU immediately to free GPU/MPS memory
-                                    embeddings.append(emb.cpu().detach())
+                                    # Move to CPU immediately and convert to float32 for consistency
+                                    embeddings.append(emb.cpu().detach().float())
 
                                 # Clean up GPU/MPS memory immediately
                                 del batch_embeddings
@@ -567,8 +567,9 @@ class ColPaliModelManager:
                 # Get query embedding from ColPali model
                 query_embedding = self.model(**query_inputs)
 
-                # Return first embedding (for single query)
-                return query_embedding[0].cpu()  # Move back to CPU for storage
+                # Return first embedding (for single query) and ensure consistent dtype
+                result_embedding = query_embedding[0].cpu().float()  # Convert to float32 for consistency
+                return result_embedding
 
         except Exception as e:
             self.logger.error(
@@ -852,6 +853,13 @@ class LanceDBManager:
                 raise ValueError(f"Query embedding must be 2D [patches, dim], got shape {query_embedding.shape}")
             if doc_embedding.dim() != 2:
                 raise ValueError(f"Document embedding must be 2D [patches, dim], got shape {doc_embedding.shape}")
+            
+            # Ensure both embeddings have the same dtype (fix for Half vs float mismatch)
+            if query_embedding.dtype != doc_embedding.dtype:
+                logging.getLogger(__name__).info(f"Converting dtype mismatch: query {query_embedding.dtype} -> doc {doc_embedding.dtype}")
+                # Convert both to float32 for consistency
+                query_embedding = query_embedding.float()
+                doc_embedding = doc_embedding.float()
             
             # Normalize embeddings (important for cosine similarity)
             query_norm = F.normalize(query_embedding, p=2, dim=1)  # [query_patches, dim]
