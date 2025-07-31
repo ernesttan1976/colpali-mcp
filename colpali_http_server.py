@@ -569,7 +569,9 @@ class ColPaliModelManager:
                 query_embedding = self.model(**query_inputs)
 
                 # Return first embedding (for single query) and ensure consistent dtype
-                result_embedding = query_embedding[0].cpu().float()  # Convert to float32 for consistency
+                result_embedding = (
+                    query_embedding[0].cpu().float()
+                )  # Convert to float32 for consistency
                 return result_embedding
 
         except Exception as e:
@@ -585,31 +587,37 @@ class ColPaliModelManager:
             torch.mps.empty_cache()
         elif self.device == "cuda":
             torch.cuda.empty_cache()
-    
-    def maxsim_score(self, query_embedding: torch.Tensor, doc_embedding: torch.Tensor) -> float:
+
+    def maxsim_score(
+        self, query_embedding: torch.Tensor, doc_embedding: torch.Tensor
+    ) -> float:
         """Compute MaxSim score between query and document embeddings for ColPali"""
         try:
             # Ensure both embeddings are 2D [patches, dim]
             if query_embedding.dim() != 2:
-                raise ValueError(f"Query embedding must be 2D [patches, dim], got shape {query_embedding.shape}")
+                raise ValueError(
+                    f"Query embedding must be 2D [patches, dim], got shape {query_embedding.shape}"
+                )
             if doc_embedding.dim() != 2:
-                raise ValueError(f"Document embedding must be 2D [patches, dim], got shape {doc_embedding.shape}")
-            
+                raise ValueError(
+                    f"Document embedding must be 2D [patches, dim], got shape {doc_embedding.shape}"
+                )
+
             # Compute similarity matrix: [query_patches, doc_patches]
             sim_matrix = torch.mm(query_embedding, doc_embedding.t())
-            
+
             # MaxSim: for each query patch, find max similarity across doc patches
             max_sims = torch.max(sim_matrix, dim=1)[0]  # [query_patches]
-            
+
             # Sum the max similarities (ColPali approach)
             maxsim_score = torch.sum(max_sims).item()
-            
+
             return maxsim_score
-            
+
         except Exception as e:
             self.logger.error(f"MaxSim scoring failed: {e}")
             return 0.0
-    
+
     def should_use_maxsim(self, embedding: torch.Tensor) -> bool:
         """Determine if we should use MaxSim scoring based on embedding shape"""
         return embedding.dim() == 2 and embedding.shape[0] > 1  # Multiple patches
@@ -725,8 +733,10 @@ class LanceDBManager:
             logger.info(f"Task {task_id}: Retrieving all documents for MaxSim scoring")
             all_docs_df = self.table.to_pandas()
             all_docs = all_docs_df.to_dict("records")
-            
-            logger.info(f"Task {task_id}: Processing {len(all_docs)} documents with ColPali MaxSim")
+
+            logger.info(
+                f"Task {task_id}: Processing {len(all_docs)} documents with ColPali MaxSim"
+            )
 
             yield StreamingProgress(
                 task_id=task_id,
@@ -739,50 +749,76 @@ class LanceDBManager:
 
             # Compute MaxSim scores for all documents
             scored_results = []
-            
+
             for i, doc in enumerate(all_docs):
                 try:
                     # Reconstruct the original embedding shape from stored data
                     stored_vector = doc.get("vector", [])
                     embedding_shape_str = doc.get("embedding_shape", "unknown")
-                    
+
                     # Parse the stored shape (e.g., "torch.Size([704, 128])")
-                    if "torch.Size([" in embedding_shape_str and "])" in embedding_shape_str:
+                    if (
+                        "torch.Size([" in embedding_shape_str
+                        and "])" in embedding_shape_str
+                    ):
                         # Extract dimensions from string like "torch.Size([704, 128])"
-                        shape_str = embedding_shape_str.replace("torch.Size([", "").replace("])", "")
+                        shape_str = embedding_shape_str.replace(
+                            "torch.Size([", ""
+                        ).replace("])", "")
                         dims = [int(d.strip()) for d in shape_str.split(",")]
                         if len(dims) == 2:
                             patches, dim = dims
-                            
+
                             # Reshape flattened vector back to [patches, dim]
                             if len(stored_vector) == patches * dim:
                                 import numpy as np
-                                doc_embedding_np = np.array(stored_vector).reshape(patches, dim)
-                                doc_embedding = torch.from_numpy(doc_embedding_np).float()
-                                
+
+                                doc_embedding_np = np.array(stored_vector).reshape(
+                                    patches, dim
+                                )
+                                doc_embedding = torch.from_numpy(
+                                    doc_embedding_np
+                                ).float()
+
                                 # Compute MaxSim score
-                                maxsim_score = self.compute_maxsim_score(query_embedding, doc_embedding)
-                                
-                                scored_results.append({
-                                    'doc': doc,
-                                    'score': maxsim_score,
-                                    'doc_name': doc.get('doc_name', ''),
-                                    'page_num': doc.get('page_num', 0)
-                                })
-                                
-                                logger.debug(f"Task {task_id}: Doc {i} MaxSim score: {maxsim_score:.4f}")
+                                maxsim_score = self.compute_maxsim_score(
+                                    query_embedding, doc_embedding
+                                )
+
+                                scored_results.append(
+                                    {
+                                        "doc": doc,
+                                        "score": maxsim_score,
+                                        "doc_name": doc.get("doc_name", ""),
+                                        "page_num": doc.get("page_num", 0),
+                                    }
+                                )
+
+                                logger.debug(
+                                    f"Task {task_id}: Doc {i} MaxSim score: {maxsim_score:.4f}"
+                                )
                             else:
-                                logger.warning(f"Task {task_id}: Vector length mismatch for doc {i}")
+                                logger.warning(
+                                    f"Task {task_id}: Vector length mismatch for doc {i}"
+                                )
                         else:
-                            logger.warning(f"Task {task_id}: Invalid shape format for doc {i}: {embedding_shape_str}")
+                            logger.warning(
+                                f"Task {task_id}: Invalid shape format for doc {i}: {embedding_shape_str}"
+                            )
                     else:
-                        logger.warning(f"Task {task_id}: Could not parse embedding shape for doc {i}: {embedding_shape_str}")
-                        
+                        logger.warning(
+                            f"Task {task_id}: Could not parse embedding shape for doc {i}: {embedding_shape_str}"
+                        )
+
                 except Exception as scoring_error:
-                    logger.error(f"Task {task_id}: Error scoring doc {i}: {scoring_error}")
+                    logger.error(
+                        f"Task {task_id}: Error scoring doc {i}: {scoring_error}"
+                    )
                     continue
 
-            logger.info(f"Task {task_id}: Computed MaxSim scores for {len(scored_results)} documents")
+            logger.info(
+                f"Task {task_id}: Computed MaxSim scores for {len(scored_results)} documents"
+            )
 
             yield StreamingProgress(
                 task_id=task_id,
@@ -794,38 +830,42 @@ class LanceDBManager:
             )
 
             # Sort by MaxSim score (higher is better)
-            scored_results.sort(key=lambda x: x['score'], reverse=True)
-            
+            scored_results.sort(key=lambda x: x["score"], reverse=True)
+
             # Apply score threshold and limit
             filtered_results = []
             for result in scored_results:
-                if result['score'] >= score_threshold:
+                if result["score"] >= score_threshold:
                     filtered_results.append(result)
                 if len(filtered_results) >= limit:
                     break
-            
-            logger.info(f"Task {task_id}: After filtering: {len(filtered_results)} results (threshold: {score_threshold})")
+
+            logger.info(
+                f"Task {task_id}: After filtering: {len(filtered_results)} results (threshold: {score_threshold})"
+            )
 
             # Format final results
             search_results = []
             for result in filtered_results:
-                doc = result['doc']
+                doc = result["doc"]
                 text_content = doc.get("text_content", "")
                 snippet = text_content[:200] if text_content else "No text content"
-                
+
                 # Create HTTP-accessible image URL instead of file path
                 image_url = None
                 if doc.get("image_path"):
                     doc_name = doc.get("doc_name", "")
                     page_num = doc.get("page_num", 0)
                     # URL encode the document name to handle special characters
-                    encoded_doc_name = urllib.parse.quote(doc_name, safe='')
-                    image_url = f"http://127.0.0.1:8000/image/{encoded_doc_name}/{page_num}"
+                    encoded_doc_name = urllib.parse.quote(doc_name, safe="")
+                    image_url = (
+                        f"http://127.0.0.1:8000/image/{encoded_doc_name}/{page_num}"
+                    )
 
                 search_result = SearchResult(
                     page_num=doc.get("page_num", 0),
                     doc_name=doc.get("doc_name", ""),
-                    score=result['score'],
+                    score=result["score"],
                     snippet=snippet,
                     image_path=image_url,  # Use HTTP URL instead of file path
                 )
@@ -844,7 +884,9 @@ class LanceDBManager:
             )
 
         except Exception as e:
-            logger.error(f"Task {task_id}: ColPali search failed: {str(e)}", exc_info=True)
+            logger.error(
+                f"Task {task_id}: ColPali search failed: {str(e)}", exc_info=True
+            )
             yield StreamingProgress(
                 task_id=task_id,
                 progress=0.0,
@@ -853,40 +895,50 @@ class LanceDBManager:
                 total_steps=1,
                 error=f"ColPali search failed: {str(e)}",
             )
-    
-    def compute_maxsim_score(self, query_embedding: torch.Tensor, doc_embedding: torch.Tensor) -> float:
+
+    def compute_maxsim_score(
+        self, query_embedding: torch.Tensor, doc_embedding: torch.Tensor
+    ) -> float:
         """
         Compute MaxSim score between query and document embeddings for ColPali
         """
         try:
             # Ensure both embeddings are 2D [patches, dim]
             if query_embedding.dim() != 2:
-                raise ValueError(f"Query embedding must be 2D [patches, dim], got shape {query_embedding.shape}")
+                raise ValueError(
+                    f"Query embedding must be 2D [patches, dim], got shape {query_embedding.shape}"
+                )
             if doc_embedding.dim() != 2:
-                raise ValueError(f"Document embedding must be 2D [patches, dim], got shape {doc_embedding.shape}")
-            
+                raise ValueError(
+                    f"Document embedding must be 2D [patches, dim], got shape {doc_embedding.shape}"
+                )
+
             # Ensure both embeddings have the same dtype (fix for Half vs float mismatch)
             if query_embedding.dtype != doc_embedding.dtype:
-                logging.getLogger(__name__).info(f"Converting dtype mismatch: query {query_embedding.dtype} -> doc {doc_embedding.dtype}")
+                logging.getLogger(__name__).info(
+                    f"Converting dtype mismatch: query {query_embedding.dtype} -> doc {doc_embedding.dtype}"
+                )
                 # Convert both to float32 for consistency
                 query_embedding = query_embedding.float()
                 doc_embedding = doc_embedding.float()
-            
+
             # Normalize embeddings (important for cosine similarity)
-            query_norm = F.normalize(query_embedding, p=2, dim=1)  # [query_patches, dim]
-            doc_norm = F.normalize(doc_embedding, p=2, dim=1)      # [doc_patches, dim]
-            
+            query_norm = F.normalize(
+                query_embedding, p=2, dim=1
+            )  # [query_patches, dim]
+            doc_norm = F.normalize(doc_embedding, p=2, dim=1)  # [doc_patches, dim]
+
             # Compute similarity matrix: [query_patches, doc_patches]
             sim_matrix = torch.mm(query_norm, doc_norm.t())
-            
+
             # MaxSim: for each query patch, find max similarity across doc patches
             max_sims = torch.max(sim_matrix, dim=1)[0]  # [query_patches]
-            
+
             # Sum the max similarities (ColPali approach)
             maxsim_score = torch.sum(max_sims).item()
-            
+
             return maxsim_score
-            
+
         except Exception as e:
             logging.getLogger(__name__).error(f"MaxSim scoring failed: {e}")
             return 0.0
@@ -916,10 +968,12 @@ class LanceDBManager:
         data = []
         for i, (embedding, meta) in enumerate(zip(embeddings, metadata)):
             # Log embedding format for debugging
-            embedding_shape = getattr(embedding, 'shape', 'no shape')
+            embedding_shape = getattr(embedding, "shape", "no shape")
             flattened_vector = embedding.numpy().flatten().tolist()
-            logger.info(f"Storing embedding {i}: original shape {embedding_shape}, flattened length {len(flattened_vector)}")
-            
+            logger.info(
+                f"Storing embedding {i}: original shape {embedding_shape}, flattened length {len(flattened_vector)}"
+            )
+
             data.append(
                 {
                     "id": f"{meta['doc_name']}_page_{meta['page_num']}",
@@ -930,7 +984,9 @@ class LanceDBManager:
                     "image_path": meta.get("image_path", ""),  # Store image path
                     "created_at": current_time,
                     "file_size": meta.get("file_size", "unknown"),
-                    "embedding_shape": str(embedding_shape),  # Store original shape for reference
+                    "embedding_shape": str(
+                        embedding_shape
+                    ),  # Store original shape for reference
                 }
             )
 
@@ -1128,14 +1184,16 @@ class ColPaliHTTPServer:
         """Save page image to disk and return path"""
         images_dir = Path("./data/extracted_images")
         images_dir.mkdir(parents=True, exist_ok=True)
-        
+
         # Create safe filename from doc_name
-        safe_doc_name = "".join(c for c in doc_name if c.isalnum() or c in (' ', '-', '_')).rstrip()
-        safe_doc_name = safe_doc_name.replace(' ', '_')
-        
+        safe_doc_name = "".join(
+            c for c in doc_name if c.isalnum() or c in (" ", "-", "_")
+        ).rstrip()
+        safe_doc_name = safe_doc_name.replace(" ", "_")
+
         image_filename = f"{safe_doc_name}_page_{page_num}.png"
         image_path = images_dir / image_filename
-        
+
         try:
             image.save(image_path, "PNG")
             self.logger.info(f"Saved page image: {image_path}")
@@ -1193,6 +1251,195 @@ class ColPaliHTTPServer:
             except Exception as e:
                 self.logger.error(f"Error serving image {doc_name}/page_{page_num}: {e}")
                 raise HTTPException(status_code=500, detail="Failed to serve image")
+
+        @self.app.get("/document/{doc_name}/page/{page_num}/text")
+        async def get_page_text(doc_name: str, page_num: int):
+            """Get the full text content for a specific page"""
+            try:
+                # Initialize database if needed
+                if self.db_manager.db is None:
+                    await self.db_manager.initialize()
+
+                if self.db_manager.table is None:
+                    raise HTTPException(status_code=404, detail="No documents table found")
+
+                # Query for the specific document and page
+                all_docs = self.db_manager.table.to_pandas()
+                
+                # URL decode the document name to handle special characters
+                decoded_doc_name = urllib.parse.unquote(doc_name)
+                
+                self.logger.info(f"Looking for doc_name='{decoded_doc_name}', page_num={page_num}")
+                
+                # Find the matching document and page
+                matching_docs = all_docs[
+                    (all_docs["doc_name"] == decoded_doc_name) & 
+                    (all_docs["page_num"] == page_num)
+                ]
+                
+                if len(matching_docs) == 0:
+                    # Log available documents for debugging
+                    available = all_docs[["doc_name", "page_num"]].drop_duplicates().head(5)
+                    self.logger.warning(f"No match found. Available docs: {available.to_dict('records')}")
+                    raise HTTPException(
+                        status_code=404, 
+                        detail=f"Page {page_num} of document '{decoded_doc_name}' not found"
+                    )
+                
+                # Get the text content
+                doc_row = matching_docs.iloc[0]
+                text_content = doc_row.get("text_content", "")
+                
+                self.logger.info(f"Found text content: {len(text_content)} characters")
+                
+                if not text_content or text_content.strip() == "":
+                    text_content = "No text content was extracted from this page during ingestion."
+                
+                return {
+                    "doc_name": decoded_doc_name,
+                    "page_num": page_num,
+                    "text_content": text_content,
+                    "character_count": len(text_content),
+                    "status": "success"
+                }
+                
+            except HTTPException:
+                raise
+            except Exception as e:
+                self.logger.error(f"Error retrieving text for {doc_name}/page_{page_num}: {e}")
+                raise HTTPException(
+                    status_code=500, 
+                    detail=f"Failed to retrieve text content: {str(e)}"
+                )
+
+        @self.app.get("/debug/document/{doc_name}/page/{page_num}")
+        async def debug_document_page(doc_name: str, page_num: int):
+            """Debug endpoint to see what's stored for a specific page"""
+            try:
+                if self.db_manager.db is None:
+                    await self.db_manager.initialize()
+
+                if self.db_manager.table is None:
+                    return {"error": "No documents table found"}
+
+                # Get all data for debugging
+                all_docs = self.db_manager.table.to_pandas()
+                decoded_doc_name = urllib.parse.unquote(doc_name)
+                
+                # Find matching documents
+                matching_docs = all_docs[
+                    (all_docs["doc_name"] == decoded_doc_name) & 
+                    (all_docs["page_num"] == page_num)
+                ]
+                
+                if len(matching_docs) == 0:
+                    return {
+                        "error": f"No matching documents found",
+                        "searched_for": {
+                            "doc_name": decoded_doc_name,
+                            "page_num": page_num
+                        },
+                        "available_docs": all_docs[["doc_name", "page_num", "text_content"]].head(10).to_dict("records")
+                    }
+                
+                doc_row = matching_docs.iloc[0]
+                return {
+                    "doc_name": doc_row.get("doc_name"),
+                    "page_num": doc_row.get("page_num"),
+                    "text_content": doc_row.get("text_content", ""),
+                    "text_length": len(str(doc_row.get("text_content", ""))),
+                    "all_fields": list(doc_row.keys()),
+                    "raw_data": doc_row.to_dict()
+                }
+                
+            except Exception as e:
+                return {"error": str(e)}
+
+        @self.app.get("/image/{doc_name}/{page_num}")
+        async def serve_page_image(doc_name: str, page_num: int):
+            """Serve page images via HTTP"""
+            try:
+                # Construct the image path
+                images_dir = Path("./data/extracted_images")
+                safe_doc_name = "".join(
+                    c for c in doc_name if c.isalnum() or c in (" ", "-", "_")
+                ).rstrip()
+                safe_doc_name = safe_doc_name.replace(" ", "_")
+                image_filename = f"{safe_doc_name}_page_{page_num}.png"
+                image_path = images_dir / image_filename
+
+                if not image_path.exists():
+                    raise HTTPException(status_code=404, detail="Image not found")
+
+                # Read and return the image file
+                return FileResponse(
+                    image_path,
+                    media_type="image/png",
+                    headers={
+                        "Cache-Control": "public, max-age=3600"
+                    },  # Cache for 1 hour
+                )
+
+            except Exception as e:
+                self.logger.error(
+                    f"Error serving image {doc_name}/page_{page_num}: {e}"
+                )
+                raise HTTPException(status_code=500, detail="Failed to serve image")
+
+        @self.app.get("/document/{doc_name}/page/{page_num}/text")
+        async def get_page_text(doc_name: str, page_num: int):
+            """Get the full text content for a specific page"""
+            try:
+                # Initialize database if needed
+                if self.db_manager.db is None:
+                    await self.db_manager.initialize()
+
+                if self.db_manager.table is None:
+                    raise HTTPException(
+                        status_code=404, detail="No documents table found"
+                    )
+
+                # Query for the specific document and page
+                all_docs = self.db_manager.table.to_pandas()
+
+                # URL decode the document name to handle special characters
+                decoded_doc_name = urllib.parse.unquote(doc_name)
+
+                # Find the matching document and page
+                matching_docs = all_docs[
+                    (all_docs["doc_name"] == decoded_doc_name)
+                    & (all_docs["page_num"] == page_num)
+                ]
+
+                if len(matching_docs) == 0:
+                    raise HTTPException(
+                        status_code=404,
+                        detail=f"Page {page_num} of document '{decoded_doc_name}' not found",
+                    )
+
+                # Get the text content
+                doc_row = matching_docs.iloc[0]
+                text_content = doc_row.get("text_content", "")
+
+                if not text_content:
+                    text_content = "No text content available for this page."
+
+                return {
+                    "doc_name": decoded_doc_name,
+                    "page_num": page_num,
+                    "text_content": text_content,
+                    "status": "success",
+                }
+
+            except HTTPException:
+                raise
+            except Exception as e:
+                self.logger.error(
+                    f"Error retrieving text for {doc_name}/page_{page_num}: {e}"
+                )
+                raise HTTPException(
+                    status_code=500, detail=f"Failed to retrieve text content: {str(e)}"
+                )
 
         @self.app.get("/model/status")
         async def model_status():
@@ -1660,12 +1907,42 @@ class ColPaliHTTPServer:
 
                 images.append(image)
 
-                # Extract text
-                text_content = page.get_text()
-                
+                # Extract text with multiple methods for better coverage
+                try:
+                    # Method 1: Standard text extraction
+                    text_content = page.get_text()
+                    
+                    # Method 2: If no text found, try extracting text blocks
+                    if not text_content or len(text_content.strip()) < 10:
+                        text_blocks = page.get_text("blocks")
+                        text_content = "\n".join([block[4] for block in text_blocks if len(block) > 4])
+                    
+                    # Method 3: If still no text, try dictionary method
+                    if not text_content or len(text_content.strip()) < 10:
+                        text_dict = page.get_text("dict")
+                        extracted_text = []
+                        for block in text_dict.get("blocks", []):
+                            if "lines" in block:
+                                for line in block["lines"]:
+                                    for span in line.get("spans", []):
+                                        if "text" in span:
+                                            extracted_text.append(span["text"])
+                        text_content = " ".join(extracted_text)
+                    
+                    # Clean up the text
+                    text_content = text_content.strip()
+                    if not text_content:
+                        text_content = f"[No extractable text found on page {page_num + 1}]"
+                    
+                    self.logger.info(f"Task {task_id}: Page {page_num + 1} extracted {len(text_content)} characters of text")
+                    
+                except Exception as text_error:
+                    self.logger.error(f"Task {task_id}: Text extraction failed for page {page_num + 1}: {text_error}")
+                    text_content = f"[Text extraction failed for page {page_num + 1}]"
+
                 # Save page image to disk
                 image_path = self.save_page_image(image, actual_doc_name, page_num + 1)
-                
+
                 metadata.append(
                     {
                         "page_num": page_num + 1,
@@ -1684,7 +1961,7 @@ class ColPaliHTTPServer:
                     current_step=f"Extracted page {page_num + 1}/{total_pages}",
                     step_num=3,
                     total_steps=6,
-                    details=f"Image: {image.size}, Text: {len(text_content)} chars",
+                    details=f"Image: {image.size}, Text: {len(text_content)} chars (extracted with robust method)",
                 )
                 self.latest_progress[task_id] = current_progress
                 await asyncio.sleep(0.05)

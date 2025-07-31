@@ -1459,7 +1459,7 @@ This would open a sophisticated document viewer with:
                 }
             }
 
-async deleteDocument(docId, docName) {
+            async deleteDocument(docId, docName) {
                 if (!confirm(`Remove "${docName}" from your library?\n\nThis will permanently delete the document and all associated embeddings. This action cannot be undone.`)) {
                     return;
                 }
@@ -1527,7 +1527,7 @@ async deleteDocument(docId, docName) {
                                  src="${result.image_path}" 
                                  alt="Page ${result.page_num} from ${result.doc_name}"
                                  onclick="colpaliUI.openImageModal('${result.image_path}', 'Page ${result.page_num} - ${result.doc_name}')"
-                                 onerror="this.parentElement.innerHTML='<div class=\"result-image-placeholder\"><div class=\"icon\">🖼️</div><div class=\"text\">Image not available</div></div>'"
+                                 onerror="this.style.display='none'"
                             />
                             <div class="result-image-caption">Click to enlarge</div>
                         </div>
@@ -1545,14 +1545,14 @@ async deleteDocument(docId, docName) {
                                         <span class="result-page">Page ${result.page_num} • ${result.doc_name}</span>
                                     </div>
                                 </div>
-                                <div class="result-snippet">${result.snippet}</div>
+                                <div class="result-snippet">${result.snippet || 'Full text content available'}</div>
                                 <div class="citation-list">
                                     <div class="citation-badge">
                                         📖 ${citation}
                                     </div>
                                 </div>
                                 <div class="result-actions">
-                                    <button class="btn btn-secondary" onclick="colpaliUI.copyToClipboard('${result.snippet.replace(/'/g, '\\\'')}')">
+                                    <button class="btn btn-secondary" onclick="colpaliUI.copyFullText('${result.doc_name}', ${result.page_num})">
                                         📋 Copy Text
                                     </button>
                                     <button class="btn btn-secondary" onclick="colpaliUI.copyCitation('${citation.replace(/'/g, '\\\'')}')">
@@ -1892,6 +1892,26 @@ async deleteDocument(docId, docName) {
                 } catch (err) {
                     console.error('Failed to copy citation: ', err);
                     this.showTemporaryStatus("Failed to copy citation", 'error');
+                }
+            }
+
+            async copyFullText(docName, pageNum) {
+                try {
+                    // Call API to get full text for the page
+                    const response = await fetch(`${this.apiBase}/document/${encodeURIComponent(docName)}/page/${pageNum}/text`);
+                    
+                    if (!response.ok) {
+                        throw new Error(`Failed to fetch full text: ${response.status}`);
+                    }
+                    
+                    const data = await response.json();
+                    const fullText = data.text || 'No text available for this page';
+                    
+                    await navigator.clipboard.writeText(fullText);
+                    this.showTemporaryStatus("Full text copied to clipboard!", 'success');
+                } catch (err) {
+                    console.error('Failed to copy full text: ', err);
+                    this.showTemporaryStatus("Failed to copy full text", 'error');
                 }
             }
 
