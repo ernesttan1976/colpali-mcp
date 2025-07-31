@@ -24,5 +24,6 @@ pip install torch==2.7.0+cu126 torchvision==0.22.0+cu126 torchaudio==2.7.0+cu126
 ### Server the RAG Server UI
 
 ```
-docker run -d -p 80:80 -v ./public_html:/usr/share/nginx/html nginx:alpine
+docker run -d -p 80:80 -v ./public_html:/usr/share/nginx/html --name colpali-ui nginx:alpine
+
 ```
