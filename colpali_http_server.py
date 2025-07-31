@@ -817,6 +817,7 @@ class LanceDBManager:
                     doc_name=doc.get("doc_name", ""),
                     score=result['score'],
                     snippet=snippet,
+                    image_path=doc.get("image_path", None),  # Include stored image path
                 )
                 search_results.append(search_result)
 
@@ -916,6 +917,7 @@ class LanceDBManager:
                     "doc_name": meta["doc_name"],
                     "page_num": meta["page_num"],
                     "text_content": meta.get("text_content", ""),
+                    "image_path": meta.get("image_path", ""),  # Store image path
                     "created_at": current_time,
                     "file_size": meta.get("file_size", "unknown"),
                     "embedding_shape": str(embedding_shape),  # Store original shape for reference
@@ -1111,6 +1113,26 @@ class ColPaliHTTPServer:
 
         # Setup routes
         self.setup_routes()
+
+    def save_page_image(self, image: Image.Image, doc_name: str, page_num: int) -> str:
+        """Save page image to disk and return path"""
+        images_dir = Path("./data/extracted_images")
+        images_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Create safe filename from doc_name
+        safe_doc_name = "".join(c for c in doc_name if c.isalnum() or c in (' ', '-', '_')).rstrip()
+        safe_doc_name = safe_doc_name.replace(' ', '_')
+        
+        image_filename = f"{safe_doc_name}_page_{page_num}.png"
+        image_path = images_dir / image_filename
+        
+        try:
+            image.save(image_path, "PNG")
+            self.logger.info(f"Saved page image: {image_path}")
+            return str(image_path.absolute())
+        except Exception as e:
+            self.logger.error(f"Failed to save page image {image_path}: {e}")
+            return ""
 
     def setup_routes(self):
         """Setup FastAPI routes"""
@@ -1605,12 +1627,17 @@ class ColPaliHTTPServer:
 
                 # Extract text
                 text_content = page.get_text()
+                
+                # Save page image to disk
+                image_path = self.save_page_image(image, actual_doc_name, page_num + 1)
+                
                 metadata.append(
                     {
                         "page_num": page_num + 1,
                         "doc_name": actual_doc_name,
                         "text_content": text_content,
                         "file_size": len(img_data),
+                        "image_path": image_path,  # Store the saved image path
                     }
                 )
 
