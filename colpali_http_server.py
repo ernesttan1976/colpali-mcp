@@ -93,14 +93,15 @@ class ColPaliModelManager:
         if device == "auto":
             if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
                 self.device = "mps"
-                # Set Apple Silicon memory optimization flags
+                # Remove memory restrictions for maximum performance
                 import os
-                os.environ['PYTORCH_MPS_HIGH_WATERMARK_RATIO'] = '0.0'
-                os.environ['PYTORCH_ENABLE_MPS_FALLBACK'] = '1'
-                print("🍎 Apple Silicon MPS detected and enabled with optimizations")
+                os.environ.pop('PYTORCH_MPS_HIGH_WATERMARK_RATIO', None)  # Remove memory limit
+                os.environ['PYTORCH_ENABLE_MPS_FALLBACK'] = '1'  # Keep fallback for compatibility
+                print("🧠 Apple Silicon MPS detected - SMART PERFORMANCE MODE")
+                print("💾 Intelligent memory management enabled")
             elif torch.cuda.is_available():
                 self.device = "cuda"
-                print("✅ CUDA detected and enabled")
+                print("⚡ CUDA detected - MAXIMUM PERFORMANCE MODE")
             else:
                 self.device = "cpu"
                 print("⚠️  Using CPU (MPS/CUDA not available)")
@@ -174,32 +175,34 @@ class ColPaliModelManager:
             
             # Use the correct model class and settings for Apple Silicon
             if "colqwen2" in self.model_name.lower():
-                # Use ColQwen2 for Apple Silicon optimization
+                # Use ColQwen2 for Apple Silicon optimization - MAXIMUM PERFORMANCE
                 self.model = ColQwen2.from_pretrained(
                     self.model_name,
-                    torch_dtype=torch.float16,  # Use float16 for memory efficiency
+                    torch_dtype=torch.float16,  # Use float16 for speed
                     device_map=self.device,
                     trust_remote_code=True,
-                    low_cpu_mem_usage=True
+                    # Remove memory restrictions for maximum performance
+                    # low_cpu_mem_usage=True  # Removed for speed
                 )
-                self.logger.info("Using ColQwen2 for Apple Silicon")
+                self.logger.info("Using ColQwen2 for Apple Silicon - SMART PERFORMANCE")
             else:
-                # Fallback to standard ColPali
+                # Fallback to standard ColPali - MAXIMUM PERFORMANCE
                 if COLPALI_ENGINE_AVAILABLE:
                     self.model = ColPali.from_pretrained(
                         self.model_name,
-                        torch_dtype=torch.float16 if self.device == "mps" else torch.float32,
+                        torch_dtype=torch.float16 if self.device in ["mps", "cuda"] else torch.float32,
                         device_map=self.device
+                        # No memory restrictions for maximum performance
                     )
-                    self.logger.info("Using ColPali engine")
+                    self.logger.info("Using ColPali engine - MAXIMUM PERFORMANCE")
                 else:
                     self.model = AutoModel.from_pretrained(
                         self.model_name,
-                        torch_dtype=torch.float32,
+                        torch_dtype=torch.float16 if self.device in ["mps", "cuda"] else torch.float32,
                         trust_remote_code=True
                     )
                     self.model.to(self.device)
-                    self.logger.info("Using transformers AutoModel")
+                    self.logger.info("Using transformers AutoModel - MAXIMUM PERFORMANCE")
                     
             self.model.eval()  # Set to evaluation mode
             self.logger.info(f"ColPali model loaded successfully on {self.device}")
@@ -249,7 +252,27 @@ class ColPaliModelManager:
             raise RuntimeError("ColPali model not loaded. Call load_model() first.")
 
         embeddings = []
-        batch_size = 4  # Process images in batches for efficiency
+        
+        # Intelligent batch sizing based on available memory and device
+        if self.device == "mps":
+            # Apple Silicon: Start conservative, can increase if memory allows
+            batch_size = 8  # Balanced for 16GB unified memory
+        elif self.device == "cuda":
+            # CUDA: Check VRAM available
+            try:
+                total_memory = torch.cuda.get_device_properties(0).total_memory / (1024**3)  # GB
+                if total_memory > 16:
+                    batch_size = 12
+                elif total_memory > 8:
+                    batch_size = 8
+                else:
+                    batch_size = 4
+            except:
+                batch_size = 6  # Safe default
+        else:
+            batch_size = 3  # Conservative for CPU
+        
+        self.logger.info(f"Using SMART PERFORMANCE batch size: {batch_size} (device: {self.device})")
         
         try:
             with torch.no_grad():  # Disable gradient computation for inference
@@ -257,6 +280,23 @@ class ColPaliModelManager:
                     batch_images = images[i:i + batch_size]
                     batch_start = i
                     batch_end = min(i + batch_size, total_pages)
+                    
+                    # Monitor memory and adjust batch size if needed
+                    if self.device == "mps" and i > 0:  # Check after first batch
+                        try:
+                            # Check if we can increase batch size
+                            import psutil
+                            memory_percent = psutil.virtual_memory().percent
+                            if memory_percent < 70 and batch_size < 12:  # Under 70% memory usage
+                                old_batch_size = batch_size
+                                batch_size = min(batch_size + 2, 12)  # Increase gradually
+                                self.logger.info(f"Memory available ({100-memory_percent:.1f}% free), increasing batch size: {old_batch_size} -> {batch_size}")
+                            elif memory_percent > 85:  # Over 85% memory usage
+                                old_batch_size = batch_size
+                                batch_size = max(batch_size - 2, 2)  # Decrease for safety
+                                self.logger.info(f"Memory pressure ({memory_percent:.1f}% used), reducing batch size: {old_batch_size} -> {batch_size}")
+                        except:
+                            pass  # Continue with current batch size if monitoring fails
                     
                     current_progress = (batch_start / total_pages) * 100
                     elapsed = time.time() - start_time
@@ -266,24 +306,46 @@ class ColPaliModelManager:
                     yield StreamingProgress(
                         task_id=task_id,
                         progress=current_progress,
-                        current_step=f"Encoding pages {batch_start + 1}-{batch_end}/{total_pages}",
+                        current_step=f"Encoding pages {batch_start + 1}-{batch_end}/{total_pages} (batch: {len(batch_images)})",
                         step_num=batch_start + 1,
                         total_steps=total_pages,
-                        details=f"Batch size: {len(batch_images)}",
+                        details=f"Smart batch size: {len(batch_images)}, Speed: {pages_per_sec:.1f} pages/sec",
                         eta_seconds=int(eta) if eta else None,
                         throughput=f"{pages_per_sec:.1f} pages/sec",
                     )
 
-                    # Process batch of images
-                    if COLPALI_ENGINE_AVAILABLE and hasattr(self.processor, 'process_images'):
-                        batch_inputs = self.processor.process_images(batch_images)
-                    else:
-                        # Fallback for transformers processor
-                        batch_inputs = self.processor(
-                            images=batch_images,
-                            return_tensors="pt",
-                            padding=True
-                        )
+                    # Process batch of images with error recovery
+                    try:
+                        if COLPALI_ENGINE_AVAILABLE and hasattr(self.processor, 'process_images'):
+                            batch_inputs = self.processor.process_images(batch_images)
+                        else:
+                            # Fallback for transformers processor
+                            batch_inputs = self.processor(
+                                images=batch_images,
+                                return_tensors="pt",
+                                padding=True
+                            )
+                    except RuntimeError as e:
+                        if "buffer size" in str(e) or "memory" in str(e).lower():
+                            # Memory error - reduce batch size and retry
+                            self.logger.warning(f"Memory error with batch size {len(batch_images)}, reducing batch size")
+                            if len(batch_images) > 1:
+                                # Split batch in half and retry
+                                mid = len(batch_images) // 2
+                                batch_images = batch_images[:mid]
+                                self.logger.info(f"Retrying with reduced batch size: {len(batch_images)}")
+                                if COLPALI_ENGINE_AVAILABLE and hasattr(self.processor, 'process_images'):
+                                    batch_inputs = self.processor.process_images(batch_images)
+                                else:
+                                    batch_inputs = self.processor(
+                                        images=batch_images,
+                                        return_tensors="pt",
+                                        padding=True
+                                    )
+                            else:
+                                raise RuntimeError(f"Cannot process even single image: {e}")
+                        else:
+                            raise
                     
                     # Move to device (handle string device properly)
                     device_obj = self._get_device_obj()
@@ -291,15 +353,33 @@ class ColPaliModelManager:
                         if isinstance(batch_inputs[key], torch.Tensor):
                             batch_inputs[key] = batch_inputs[key].to(device_obj)
                     
-                    # Get embeddings from ColPali model
-                    batch_embeddings = self.model(**batch_inputs)
+                    # Get embeddings from ColPali model with error recovery
+                    try:
+                        batch_embeddings = self.model(**batch_inputs)
+                    except RuntimeError as e:
+                        if "buffer size" in str(e) or "memory" in str(e).lower():
+                            # Memory error during inference - force smaller batch
+                            self.logger.error(f"Memory error during model inference: {e}")
+                            self.logger.info("Forcing batch size reduction for next iterations")
+                            # Reduce batch size for remaining batches
+                            batch_size = max(1, batch_size // 2)
+                            self.logger.info(f"New batch size for remaining pages: {batch_size}")
+                            raise RuntimeError(f"Memory limit exceeded. Try reducing batch size or closing other applications. Original error: {e}")
+                        else:
+                            raise
                     
-                    # Store embeddings (convert to CPU to save GPU memory)
-                    for emb in batch_embeddings:
-                        embeddings.append(emb.cpu())
+                    # Store embeddings (keep on GPU longer for speed if possible)
+                    if self.device == "cpu":
+                        # Only move to CPU if using CPU device
+                        for emb in batch_embeddings:
+                            embeddings.append(emb.cpu())
+                    else:
+                        # Keep on GPU/MPS for faster processing, move to CPU only at the end
+                        for emb in batch_embeddings:
+                            embeddings.append(emb.detach())  # Keep on device for speed
                     
-                    # Small delay to allow progress updates
-                    await asyncio.sleep(0.1)
+                    # Minimal delay for progress updates
+                    await asyncio.sleep(0.05)  # Reduced from 0.1 for speed
 
             final_progress = (total_pages / total_pages) * 100
             elapsed = time.time() - start_time
@@ -311,9 +391,18 @@ class ColPaliModelManager:
                 current_step="Page encoding complete",
                 step_num=total_pages,
                 total_steps=total_pages,
-                details=f"Generated {len(embeddings)} embeddings",
+                details=f"Generated {len(embeddings)} embeddings - MAXIMUM PERFORMANCE",
                 throughput=f"Average: {avg_throughput:.1f} pages/sec",
             )
+            
+            # Convert embeddings to CPU at the very end for storage
+            if self.device != "cpu":
+                self.logger.info("Converting embeddings to CPU for storage...")
+                cpu_embeddings = []
+                for emb in embeddings:
+                    cpu_embeddings.append(emb.cpu())
+                embeddings = cpu_embeddings
+                self.logger.info("Embeddings converted to CPU for storage")
             
         except Exception as e:
             self.logger.error(f"Failed to encode pages: {str(e)}", exc_info=True)
@@ -1346,10 +1435,28 @@ class ColPaliHTTPServer:
             self.logger.info(f"Task {task_id}: Generating embeddings using ColPali model")
             
             try:
-                # Use model_manager to encode all pages
+                # Use model_manager to encode all pages - SMART PERFORMANCE
                 embeddings = []
                 with torch.no_grad():
-                    batch_size = 4
+                    # Use the same intelligent batch sizing as the model manager
+                    if self.model_manager.device == "mps":
+                        batch_size = 8  # Balanced for 16GB unified memory
+                    elif self.model_manager.device == "cuda":
+                        try:
+                            total_memory = torch.cuda.get_device_properties(0).total_memory / (1024**3)
+                            if total_memory > 16:
+                                batch_size = 12
+                            elif total_memory > 8:
+                                batch_size = 8
+                            else:
+                                batch_size = 4
+                        except:
+                            batch_size = 6
+                    else:
+                        batch_size = 3
+                        
+                    self.logger.info(f"Task {task_id}: Using SMART PERFORMANCE batch size: {batch_size}")
+                    
                     for i in range(0, len(images), batch_size):
                         batch_images = images[i:i + batch_size]
                         
@@ -1365,9 +1472,13 @@ class ColPaliHTTPServer:
                         # Get embeddings
                         batch_embeddings = self.model_manager.model(**batch_inputs)
                         
-                        # Store embeddings (convert to CPU)
-                        for emb in batch_embeddings:
-                            embeddings.append(emb.cpu())
+                        # Store embeddings (keep on device for speed, convert to CPU at the end)
+                        if self.model_manager.device == "cpu":
+                            for emb in batch_embeddings:
+                                embeddings.append(emb.cpu())
+                        else:
+                            for emb in batch_embeddings:
+                                embeddings.append(emb.detach())  # Keep on device for speed
                         
                         # Update progress
                         current_batch_progress = 40.0 + ((i + len(batch_images)) / len(images)) * 30.0
@@ -1377,10 +1488,18 @@ class ColPaliHTTPServer:
                             current_step=f"Encoded {i + len(batch_images)}/{len(images)} pages",
                             step_num=4,
                             total_steps=6,
-                            details=f"Batch {i//batch_size + 1} complete"
+                            details=f"Batch {i//batch_size + 1} complete - SMART PERFORMANCE"
                         )
                         self.latest_progress[task_id] = progress
-                        await asyncio.sleep(0.1)
+                        await asyncio.sleep(0.05)  # Reduced delay for speed
+                        
+                    # Convert to CPU at the end for storage
+                    if self.model_manager.device != "cpu":
+                        self.logger.info(f"Task {task_id}: Converting embeddings to CPU for storage...")
+                        cpu_embeddings = []
+                        for emb in embeddings:
+                            cpu_embeddings.append(emb.cpu())
+                        embeddings = cpu_embeddings
                         
             except Exception as encoding_error:
                 self.logger.error(f"Task {task_id}: ColPali encoding failed: {encoding_error}", exc_info=True)
