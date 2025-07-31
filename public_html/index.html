@@ -1347,7 +1347,7 @@ This would open a sophisticated document viewer with:
                 let pollCount = 0;
                 let lastLogTime = Date.now();
                 const maxIdleTime = 120000; // 2 minutes without logs = timeout
-                const maxTotalTime = 600000; // 10 minutes absolute max
+                const maxTotalTime = 1800000; // 30 minutes absolute max
                 const startTime = Date.now();
                 
                 this.addLogEntry(statusId, `🔄 Starting real-time progress tracking for task ${taskId}`, 'info');
