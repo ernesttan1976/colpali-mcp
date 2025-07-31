@@ -1224,14 +1224,14 @@
                             <span>Size: ${doc.size}</span>
                             <span>Created: ${this.formatDate(doc.created_date)}</span>
                         </div>
-                        <div class="document-actions">
+<div class="document-actions">
                             <button class="btn btn-secondary btn-small" onclick="colpaliUI.viewDocument('${doc.id}')">
                                 View Details
                             </button>
                             <button class="btn btn-secondary btn-small" onclick="colpaliUI.reindexDocument('${doc.id}')">
                                 Reprocess
                             </button>
-                            <button class="btn btn-danger btn-small" onclick="colpaliUI.deleteDocument('${doc.id}', '${doc.name}')">
+                            <button class="btn btn-danger btn-small" onclick="colpaliUI.deleteDocument('${doc.id}', '${doc.name.replace(/'/g, '\\\'')}')">
                                 Remove
                             </button>
                         </div>
@@ -1282,7 +1282,7 @@ This would open a sophisticated document viewer with:
                 }
             }
 
-            async deleteDocument(docId, docName) {
+async deleteDocument(docId, docName) {
                 if (!confirm(`Remove "${docName}" from your library?\n\nThis will permanently delete the document and all associated embeddings. This action cannot be undone.`)) {
                     return;
                 }
@@ -1290,14 +1290,33 @@ This would open a sophisticated document viewer with:
                 try {
                     this.showStatus('documentsStatus', `Removing "${docName}" from library...`, 'loading');
                     
-                    // Simulate deletion
-                    await new Promise(resolve => setTimeout(resolve, 1500));
+                    // Call the delete endpoint
+                    const response = await fetch(`${this.apiBase}/documents/${encodeURIComponent(docName)}`, {
+                        method: 'DELETE'
+                    });
+                    
+                    if (!response.ok) {
+                        const errorText = await response.text();
+                        let errorMessage;
+                        try {
+                            const errorData = JSON.parse(errorText);
+                            errorMessage = errorData.detail || errorText;
+                        } catch {
+                            errorMessage = errorText;
+                        }
+                        throw new Error(`Delete failed with status ${response.status}: ${errorMessage}`);
+                    }
+                    
+                    const result = await response.json();
                     
                     // Remove from local array
                     this.documents = this.documents.filter(d => d.id !== docId);
                     this.displayDocuments();
                     
-                    this.showStatus('documentsStatus', `Document "${docName}" has been removed from your library`, 'success');
+                    this.showStatus('documentsStatus', `Document "${docName}" has been removed from your library (${result.deleted_embeddings} embeddings deleted)`, 'success');
+                    
+                    // Log the successful deletion
+                    console.log('Document deleted successfully:', result);
                     
                 } catch (error) {
                     console.error('Delete error:', error);

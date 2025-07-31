@@ -1434,6 +1434,83 @@ class ColPaliHTTPServer:
                 ]
             }
 
+@self.app.delete("/documents/{doc_name}")
+        async def delete_document(doc_name: str):
+            """Delete a document and all its embeddings"""
+            task_id = f"delete_{uuid.uuid4().hex[:8]}"
+            self.logger.info(f"Starting document deletion task {task_id} for: {doc_name}")
+            
+            try:
+                # Initialize database if needed
+                if self.db_manager.db is None:
+                    await self.db_manager.initialize()
+                    
+                if self.db_manager.table is None:
+                    self.logger.error(f"Task {task_id}: No documents table found")
+                    raise HTTPException(status_code=404, detail="No documents table found")
+                
+                # Check if document exists
+                try:
+                    # Query to find documents with this name
+                    all_docs = self.db_manager.table.to_pandas()
+                    doc_rows = all_docs[all_docs['doc_name'] == doc_name]
+                    
+                    if len(doc_rows) == 0:
+                        self.logger.warning(f"Task {task_id}: Document '{doc_name}' not found")
+                        raise HTTPException(status_code=404, detail=f"Document '{doc_name}' not found")
+                    
+                    self.logger.info(f"Task {task_id}: Found {len(doc_rows)} embeddings to delete for '{doc_name}'")
+                    
+                    # Delete rows with this document name
+                    # LanceDB doesn't have a direct delete by filter, so we need to filter and recreate
+                    remaining_docs = all_docs[all_docs['doc_name'] != doc_name]
+                    
+                    if len(remaining_docs) == 0:
+                        # If no documents remain, drop the table entirely
+                        try:
+                            self.db_manager.db.drop_table("documents")
+                            self.db_manager.table = None
+                            self.logger.info(f"Task {task_id}: Dropped empty documents table")
+                        except Exception as drop_error:
+                            self.logger.warning(f"Task {task_id}: Could not drop table: {drop_error}")
+                    else:
+                        # Recreate table with remaining data
+                        try:
+                            # Convert back to records format
+                            remaining_data = remaining_docs.to_dict('records')
+                            
+                            # Drop old table and create new one
+                            self.db_manager.db.drop_table("documents")
+                            self.db_manager.table = self.db_manager.db.create_table("documents", remaining_data)
+                            
+                            self.logger.info(f"Task {task_id}: Recreated table with {len(remaining_data)} remaining embeddings")
+                        except Exception as recreate_error:
+                            self.logger.error(f"Task {task_id}: Failed to recreate table: {recreate_error}")
+                            raise HTTPException(status_code=500, detail=f"Failed to recreate table: {recreate_error}")
+                    
+                    deleted_count = len(doc_rows)
+                    remaining_count = len(remaining_docs)
+                    
+                    self.logger.info(f"Task {task_id}: Successfully deleted {deleted_count} embeddings for '{doc_name}', {remaining_count} embeddings remain")
+                    
+                    return {
+                        "task_id": task_id,
+                        "status": "completed",
+                        "message": f"Document '{doc_name}' deleted successfully",
+                        "deleted_embeddings": deleted_count,
+                        "remaining_embeddings": remaining_count
+                    }
+                    
+                except Exception as query_error:
+                    self.logger.error(f"Task {task_id}: Database query error: {query_error}")
+                    raise HTTPException(status_code=500, detail=f"Database error: {query_error}")
+                    
+            except HTTPException:
+                raise
+            except Exception as e:
+                self.logger.error(f"Task {task_id}: Deletion failed: {str(e)}", exc_info=True)
+                raise HTTPException(status_code=500, detail=f"Deletion failed: {str(e)}")
+
         @self.app.get("/logs")
         async def get_recent_logs():
             """Get recent server logs"""
