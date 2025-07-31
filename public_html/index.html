@@ -1524,9 +1524,9 @@ async deleteDocument(docId, docName) {
                     const imageSection = hasImage ? `
                         <div class="result-image-container">
                             <img class="result-image" 
-                                 src="file://${result.image_path}" 
+                                 src="${result.image_path}" 
                                  alt="Page ${result.page_num} from ${result.doc_name}"
-                                 onclick="colpaliUI.openImageModal('file://${result.image_path}', 'Page ${result.page_num} - ${result.doc_name}')"
+                                 onclick="colpaliUI.openImageModal('${result.image_path}', 'Page ${result.page_num} - ${result.doc_name}')"
                                  onerror="this.parentElement.innerHTML='<div class=\"result-image-placeholder\"><div class=\"icon\">🖼️</div><div class=\"text\">Image not available</div></div>'"
                             />
                             <div class="result-image-caption">Click to enlarge</div>
@@ -1558,7 +1558,7 @@ async deleteDocument(docId, docName) {
                                     <button class="btn btn-secondary" onclick="colpaliUI.copyCitation('${citation.replace(/'/g, '\\\'')}')">
                                         📚 Copy Citation
                                     </button>
-                                    ${hasImage ? `<button class="btn btn-secondary" onclick="colpaliUI.openImageModal('file://${result.image_path}', 'Page ${result.page_num} - ${result.doc_name}')">
+                                    ${hasImage ? `<button class="btn btn-secondary" onclick="colpaliUI.openImageModal('${result.image_path}', 'Page ${result.page_num} - ${result.doc_name}')">
                                         🔍 View Page
                                     </button>` : ''}
                                 </div>

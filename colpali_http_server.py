@@ -12,6 +12,7 @@ import uuid
 import io
 import gc  # For garbage collection
 import psutil  # For memory monitoring
+import urllib.parse  # For URL encoding
 from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Dict, List, Optional, AsyncGenerator, Any
@@ -21,7 +22,7 @@ import lancedb
 from PIL import Image
 import fitz  # PyMuPDF
 from fastapi import FastAPI, HTTPException, BackgroundTasks, UploadFile, File
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, FileResponse
 from pydantic import BaseModel
 import uvicorn
 from fastapi.middleware.cors import CORSMiddleware
@@ -811,13 +812,22 @@ class LanceDBManager:
                 doc = result['doc']
                 text_content = doc.get("text_content", "")
                 snippet = text_content[:200] if text_content else "No text content"
+                
+                # Create HTTP-accessible image URL instead of file path
+                image_url = None
+                if doc.get("image_path"):
+                    doc_name = doc.get("doc_name", "")
+                    page_num = doc.get("page_num", 0)
+                    # URL encode the document name to handle special characters
+                    encoded_doc_name = urllib.parse.quote(doc_name, safe='')
+                    image_url = f"http://127.0.0.1:8000/image/{encoded_doc_name}/{page_num}"
 
                 search_result = SearchResult(
                     page_num=doc.get("page_num", 0),
                     doc_name=doc.get("doc_name", ""),
                     score=result['score'],
                     snippet=snippet,
-                    image_path=doc.get("image_path", None),  # Include stored image path
+                    image_path=image_url,  # Use HTTP URL instead of file path
                 )
                 search_results.append(search_result)
 
@@ -1158,6 +1168,31 @@ class ColPaliHTTPServer:
                 else "unknown",
                 "active_tasks": len(self.active_tasks),
             }
+
+        @self.app.get("/image/{doc_name}/{page_num}")
+        async def serve_page_image(doc_name: str, page_num: int):
+            """Serve page images via HTTP"""
+            try:
+                # Construct the image path
+                images_dir = Path("./data/extracted_images")
+                safe_doc_name = "".join(c for c in doc_name if c.isalnum() or c in (' ', '-', '_')).rstrip()
+                safe_doc_name = safe_doc_name.replace(' ', '_')
+                image_filename = f"{safe_doc_name}_page_{page_num}.png"
+                image_path = images_dir / image_filename
+                
+                if not image_path.exists():
+                    raise HTTPException(status_code=404, detail="Image not found")
+                
+                # Read and return the image file
+                return FileResponse(
+                    image_path,
+                    media_type="image/png",
+                    headers={"Cache-Control": "public, max-age=3600"}  # Cache for 1 hour
+                )
+                
+            except Exception as e:
+                self.logger.error(f"Error serving image {doc_name}/page_{page_num}: {e}")
+                raise HTTPException(status_code=500, detail="Failed to serve image")
 
         @self.app.get("/model/status")
         async def model_status():
