@@ -10,6 +10,8 @@ import logging
 import time
 import uuid
 import io
+import gc  # For garbage collection
+import psutil  # For memory monitoring
 from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Dict, List, Optional, AsyncGenerator, Any
@@ -253,8 +255,8 @@ class ColPaliModelManager:
     async def encode_pages(
         self, images: List[Image.Image]
     ) -> AsyncGenerator[StreamingProgress, None]:
-        """Encode PDF pages with streaming progress"""
-        task_id = f"encode_{uuid.uuid4().hex[:1]}"
+        """Encode PDF pages with streaming progress and memory management"""
+        task_id = f"encode_{uuid.uuid4().hex[:8]}"
         total_pages = len(images)
         start_time = time.time()
 
@@ -272,170 +274,148 @@ class ColPaliModelManager:
 
         embeddings = []
 
-        # Intelligent batch sizing based on available memory and device
-        if self.device == "mps":
-            # Apple Silicon: Start conservative, can increase if memory allows
-            batch_size = 1  # Balanced for 16GB unified memory
-        elif self.device == "cuda":
-            # CUDA: Check VRAM available
-            try:
-                total_memory = torch.cuda.get_device_properties(0).total_memory / (
-                    1024**3
-                )  # GB
-                if total_memory > 16:
-                    batch_size = 12
-                elif total_memory > 8:
-                    batch_size = 8
-                else:
-                    batch_size = 4
-            except:
-                batch_size = 6  # Safe default
-        else:
-            batch_size = 3  # Conservative for CPU
-
-        self.logger.info(
-            f"Using SMART PERFORMANCE batch size: {batch_size} (device: {self.device})"
-        )
+        # MEMORY-OPTIMIZED batch sizing
+        initial_batch_size = 1  # Start very conservative
+        max_batch_size = 4      # Never exceed this
+        current_batch_size = initial_batch_size
+        
+        # Memory monitoring
+        memory_threshold = 85  # Reduce batch if memory > 85%
+        
+        self.logger.info(f"Starting with conservative batch size: {current_batch_size}")
 
         try:
-            with torch.no_grad():  # Disable gradient computation for inference
-                for i in range(0, total_pages, batch_size):
-                    batch_images = images[i : i + batch_size]
+            with torch.no_grad():
+                for i in range(0, total_pages, current_batch_size):
+                    # Monitor memory before each batch
+                    try:
+                        memory_percent = psutil.virtual_memory().percent
+                        if memory_percent > memory_threshold:
+                            # Force garbage collection
+                            gc.collect()
+                            if self.device == "mps":
+                                torch.mps.empty_cache()
+                            elif self.device == "cuda":
+                                torch.cuda.empty_cache()
+                            
+                            # Reduce batch size if memory is high
+                            if current_batch_size > 1:
+                                current_batch_size = max(1, current_batch_size - 1)
+                                self.logger.warning(
+                                    f"High memory usage ({memory_percent:.1f}%), reducing batch size to {current_batch_size}"
+                                )
+                    except Exception:
+                        pass  # Continue if memory monitoring fails
+
+                    batch_images = images[i : i + current_batch_size]
                     batch_start = i
-                    batch_end = min(i + batch_size, total_pages)
-
-                    # Monitor memory and adjust batch size if needed
-                    if self.device == "mps" and i > 0:  # Check after first batch
-                        try:
-                            # Check if we can increase batch size
-                            import psutil
-
-                            memory_percent = psutil.virtual_memory().percent
-                            if (
-                                memory_percent < 70 and batch_size < 12
-                            ):  # Under 70% memory usage
-                                old_batch_size = batch_size
-                                batch_size = min(
-                                    batch_size + 2, 12
-                                )  # Increase gradually
-                                self.logger.info(
-                                    f"Memory available ({100 - memory_percent:.1f}% free), increasing batch size: {old_batch_size} -> {batch_size}"
-                                )
-                            elif memory_percent > 85:  # Over 85% memory usage
-                                old_batch_size = batch_size
-                                batch_size = max(
-                                    batch_size - 2, 2
-                                )  # Decrease for safety
-                                self.logger.info(
-                                    f"Memory pressure ({memory_percent:.1f}% used), reducing batch size: {old_batch_size} -> {batch_size}"
-                                )
-                        except:
-                            pass  # Continue with current batch size if monitoring fails
+                    batch_end = min(i + current_batch_size, total_pages)
 
                     current_progress = (batch_start / total_pages) * 100
                     elapsed = time.time() - start_time
                     pages_per_sec = batch_start / elapsed if elapsed > 0 else 0
-                    eta = (
-                        (total_pages - batch_start) / pages_per_sec
-                        if pages_per_sec > 0
-                        else None
-                    )
 
                     yield StreamingProgress(
                         task_id=task_id,
                         progress=current_progress,
-                        current_step=f"Encoding pages {batch_start + 1}-{batch_end}/{total_pages} (batch: {len(batch_images)})",
+                        current_step=f"Encoding batch {batch_start + 1}-{batch_end}/{total_pages}",
                         step_num=batch_start + 1,
                         total_steps=total_pages,
-                        details=f"Smart batch size: {len(batch_images)}, Speed: {pages_per_sec:.1f} pages/sec",
-                        eta_seconds=int(eta) if eta else None,
+                        details=f"Memory-safe batch size: {len(batch_images)}",
                         throughput=f"{pages_per_sec:.1f} pages/sec",
                     )
 
-                    # Process batch of images with error recovery
-                    try:
-                        if COLPALI_ENGINE_AVAILABLE and hasattr(
-                            self.processor, "process_images"
-                        ):
-                            batch_inputs = self.processor.process_images(batch_images)
-                        else:
-                            # Fallback for transformers processor
-                            batch_inputs = self.processor(
-                                images=batch_images, return_tensors="pt", padding=True
-                            )
-                    except RuntimeError as e:
-                        if "buffer size" in str(e) or "memory" in str(e).lower():
-                            # Memory error - reduce batch size and retry
-                            self.logger.warning(
-                                f"Memory error with batch size {len(batch_images)}, reducing batch size"
-                            )
-                            if len(batch_images) > 1:
-                                # Split batch in half and retry
-                                mid = len(batch_images) // 2
-                                batch_images = batch_images[:mid]
-                                self.logger.info(
-                                    f"Retrying with reduced batch size: {len(batch_images)}"
-                                )
-                                if COLPALI_ENGINE_AVAILABLE and hasattr(
-                                    self.processor, "process_images"
-                                ):
-                                    batch_inputs = self.processor.process_images(
-                                        batch_images
-                                    )
-                                else:
-                                    batch_inputs = self.processor(
-                                        images=batch_images,
-                                        return_tensors="pt",
-                                        padding=True,
-                                    )
+                    # Process images with retry logic
+                    max_retries = 3
+                    retry_count = 0
+                    batch_success = False
+                    
+                    while retry_count < max_retries and not batch_success:
+                        try:
+                            # Process batch of images
+                            if COLPALI_ENGINE_AVAILABLE and hasattr(self.processor, "process_images"):
+                                batch_inputs = self.processor.process_images(batch_images)
                             else:
-                                raise RuntimeError(
-                                    f"Cannot process even single image: {e}"
+                                batch_inputs = self.processor(
+                                    images=batch_images, 
+                                    return_tensors="pt", 
+                                    padding=True,
+                                    max_length=512,  # Limit sequence length
+                                    truncation=True
                                 )
-                        else:
-                            raise
 
-                    # Move to device (handle string device properly)
-                    device_obj = self._get_device_obj()
-                    for key in batch_inputs:
-                        if isinstance(batch_inputs[key], torch.Tensor):
-                            batch_inputs[key] = batch_inputs[key].to(device_obj)
+                            # Move to device with memory check
+                            device_obj = self._get_device_obj()
+                            for key in batch_inputs:
+                                if isinstance(batch_inputs[key], torch.Tensor):
+                                    batch_inputs[key] = batch_inputs[key].to(device_obj)
 
-                    # Get embeddings from ColPali model with error recovery
-                    try:
-                        batch_embeddings = self.model(**batch_inputs)
-                    except RuntimeError as e:
-                        if "buffer size" in str(e) or "memory" in str(e).lower():
-                            # Memory error during inference - force smaller batch
-                            self.logger.error(
-                                f"Memory error during model inference: {e}"
-                            )
-                            self.logger.info(
-                                "Forcing batch size reduction for next iterations"
-                            )
-                            # Reduce batch size for remaining batches
-                            batch_size = max(1, batch_size // 2)
-                            self.logger.info(
-                                f"New batch size for remaining pages: {batch_size}"
-                            )
-                            raise RuntimeError(
-                                f"Memory limit exceeded. Try reducing batch size or closing other applications. Original error: {e}"
-                            )
-                        else:
-                            raise
+                            # Model inference with memory management
+                            try:
+                                batch_embeddings = self.model(**batch_inputs)
+                                batch_success = True
+                                
+                                # Process embeddings immediately to free memory
+                                for emb in batch_embeddings:
+                                    # Move to CPU immediately to free GPU/MPS memory
+                                    embeddings.append(emb.cpu().detach())
+                                
+                                # Clean up GPU/MPS memory immediately
+                                del batch_embeddings
+                                del batch_inputs
+                                
+                                if self.device == "mps":
+                                    torch.mps.empty_cache()
+                                elif self.device == "cuda":
+                                    torch.cuda.empty_cache()
+                                
+                                gc.collect()
+                                
+                            except RuntimeError as inference_error:
+                                error_msg = str(inference_error).lower()
+                                if "buffer size" in error_msg or "memory" in error_msg or "out of memory" in error_msg:
+                                    self.logger.error(f"Memory error during inference: {inference_error}")
+                                    
+                                    # Clean up memory
+                                    del batch_inputs
+                                    if self.device == "mps":
+                                        torch.mps.empty_cache()
+                                    elif self.device == "cuda":
+                                        torch.cuda.empty_cache()
+                                    gc.collect()
+                                    
+                                    # If we're already at batch size 1, we can't reduce further
+                                    if len(batch_images) == 1:
+                                        raise RuntimeError(
+                                            f"Cannot process even a single page due to memory constraints. "
+                                            f"Try closing other applications or reducing image resolution. "
+                                            f"Original error: {inference_error}"
+                                        )
+                                    else:
+                                        # Split the batch and retry
+                                        batch_images = batch_images[:len(batch_images)//2]
+                                        current_batch_size = len(batch_images)
+                                        retry_count += 1
+                                        self.logger.warning(
+                                            f"Retrying with smaller batch size: {len(batch_images)} (attempt {retry_count})"
+                                        )
+                                        continue
+                                else:
+                                    raise
+                                    
+                        except Exception as process_error:
+                            retry_count += 1
+                            if retry_count >= max_retries:
+                                raise RuntimeError(f"Failed to process batch after {max_retries} attempts: {process_error}")
+                            
+                            self.logger.warning(f"Batch processing failed, retry {retry_count}: {process_error}")
+                            # Reduce batch size for retry
+                            if len(batch_images) > 1:
+                                batch_images = batch_images[:len(batch_images)//2]
+                            await asyncio.sleep(0.5)  # Brief pause before retry
 
-                    # Store embeddings (keep on GPU longer for speed if possible)
-                    if self.device == "cpu":
-                        # Only move to CPU if using CPU device
-                        for emb in batch_embeddings:
-                            embeddings.append(emb.cpu())
-                    else:
-                        # Keep on GPU/MPS for faster processing, move to CPU only at the end
-                        for emb in batch_embeddings:
-                            embeddings.append(emb.detach())  # Keep on device for speed
-
-                    # Minimal delay for progress updates
-                    await asyncio.sleep(0.05)  # Reduced from 0.1 for speed
+                    # Brief pause between batches to allow system recovery
+                    await asyncio.sleep(0.1)
 
             final_progress = (total_pages / total_pages) * 100
             elapsed = time.time() - start_time
@@ -447,18 +427,11 @@ class ColPaliModelManager:
                 current_step="Page encoding complete",
                 step_num=total_pages,
                 total_steps=total_pages,
-                details=f"Generated {len(embeddings)} embeddings - MAXIMUM PERFORMANCE",
+                details=f"Generated {len(embeddings)} embeddings with memory optimization",
                 throughput=f"Average: {avg_throughput:.1f} pages/sec",
             )
 
-            # Convert embeddings to CPU at the very end for storage
-            if self.device != "cpu":
-                self.logger.info("Converting embeddings to CPU for storage...")
-                cpu_embeddings = []
-                for emb in embeddings:
-                    cpu_embeddings.append(emb.cpu())
-                embeddings = cpu_embeddings
-                self.logger.info("Embeddings converted to CPU for storage")
+            self.logger.info(f"Successfully encoded {len(embeddings)} pages with memory optimization")
 
         except Exception as e:
             self.logger.error(f"Failed to encode pages: {str(e)}", exc_info=True)
@@ -584,6 +557,14 @@ class ColPaliModelManager:
                 f"Failed to encode query '{query}': {str(e)}", exc_info=True
             )
             raise
+
+    def cleanup_memory(self):
+        """Force memory cleanup"""
+        gc.collect()
+        if self.device == "mps":
+            torch.mps.empty_cache()
+        elif self.device == "cuda":
+            torch.cuda.empty_cache()
 
 
 class LanceDBManager:
@@ -1519,6 +1500,11 @@ class ColPaliHTTPServer:
             # Extract PDF pages directly (keeping existing extraction logic)
             doc = fitz.open(temp_file_path)
             total_pages = len(doc)
+            
+            # Limit processing if too many pages (adjust as needed)
+            if total_pages > 50:
+                self.logger.warning(f"Task {task_id}: Large document ({total_pages} pages), processing first 50 pages")
+                total_pages = 50
 
             self.logger.info(f"Task {task_id}: Processing {total_pages} pages from PDF")
 
@@ -1528,25 +1514,29 @@ class ColPaliHTTPServer:
             for page_num in range(total_pages):
                 page = doc[page_num]
 
-                # Extract image
-                pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))  # 2x zoom
+                # Use lower resolution for memory savings (adjust zoom as needed)
+                zoom_factor = 1.5  # Reduced from 2.0
+                pix = page.get_pixmap(matrix=fitz.Matrix(zoom_factor, zoom_factor))
                 img_data = pix.tobytes("png")
                 image = Image.open(io.BytesIO(img_data))
+                
+                # Optionally resize image if too large
+                max_size = (1024, 1024)  # Adjust as needed
+                if image.size[0] > max_size[0] or image.size[1] > max_size[1]:
+                    image.thumbnail(max_size, Image.Resampling.LANCZOS)
+                
                 images.append(image)
 
                 # Extract text
                 text_content = page.get_text()
+                metadata.append({
+                    "page_num": page_num + 1,
+                    "doc_name": actual_doc_name,
+                    "text_content": text_content,
+                    "file_size": len(img_data),
+                })
 
-                metadata.append(
-                    {
-                        "page_num": page_num + 1,
-                        "doc_name": actual_doc_name,
-                        "text_content": text_content,
-                        "file_size": len(img_data),  # Store image size
-                    }
-                )
-
-                # Update progress for each page
+                # Update progress
                 page_progress = 20.0 + ((page_num + 1) / total_pages) * 20.0
                 current_progress = StreamingProgress(
                     task_id=task_id,
@@ -1557,144 +1547,76 @@ class ColPaliHTTPServer:
                     details=f"Image: {image.size}, Text: {len(text_content)} chars",
                 )
                 self.latest_progress[task_id] = current_progress
-                await asyncio.sleep(0.05)  # Brief pause to allow progress updates
+                await asyncio.sleep(0.05)
 
             doc.close()
-            self.logger.info(
-                f"Task {task_id}: Extracted {len(images)} pages successfully"
-            )
+            
+            # Memory cleanup after PDF processing
+            self.model_manager.cleanup_memory()
 
-            # Encode pages with real ColPali model
-            self.logger.info(
-                f"Task {task_id}: Starting ColPali encoding for {len(images)} pages"
-            )
+            # The encode_pages method is now memory-optimized and returns embeddings as a generator
+            # We need to collect the actual embeddings
+            self.logger.info(f"Task {task_id}: Starting memory-optimized ColPali encoding")
+            
+            # Process images in very small batches with the memory-safe approach
             embeddings = []
-            async for progress in self.model_manager.encode_pages(images):
-                progress.task_id = task_id
-                progress.step_num = 4
-                progress.total_steps = 6
-                # Adjust progress to fit within step 4's range (40-70%)
-                progress.progress = 40.0 + (progress.progress / 100.0) * 30.0
-                self.latest_progress[task_id] = progress
-                self.logger.info(
-                    f"Task {task_id}: Encoding - {progress.current_step} ({progress.progress:.1f}%)"
+            batch_size = 1  # Very conservative for memory safety
+            
+            for i in range(0, len(images), batch_size):
+                batch_images = images[i:i + batch_size]
+                
+                # Update progress
+                encode_progress = 40.0 + ((i + 1) / len(images)) * 30.0
+                progress_update = StreamingProgress(
+                    task_id=task_id,
+                    progress=encode_progress,
+                    current_step=f"Encoding page {i + 1}/{len(images)} with memory optimization",
+                    step_num=4,
+                    total_steps=6,
+                    details=f"Memory-safe batch processing",
                 )
-                if progress.throughput:
-                    self.logger.info(
-                        f"Task {task_id}: Encoding throughput: {progress.throughput}"
-                    )
+                self.latest_progress[task_id] = progress_update
+                
+                try:
+                    # Process with processor
+                    batch_inputs = self.model_manager.processor.process_images(batch_images)
+                    
+                    # Move to device
+                    device_obj = self.model_manager._get_device_obj()
+                    for key in batch_inputs:
+                        if isinstance(batch_inputs[key], torch.Tensor):
+                            batch_inputs[key] = batch_inputs[key].to(device_obj)
+                    
+                    # Get embeddings with memory management
+                    with torch.no_grad():
+                        batch_embeddings = self.model_manager.model(**batch_inputs)
+                    
+                    # Immediately move to CPU and store
+                    for emb in batch_embeddings:
+                        embeddings.append(emb.cpu().detach())
+                    
+                    # Clean up immediately after each batch
+                    del batch_embeddings, batch_inputs
+                    self.model_manager.cleanup_memory()
+                    
+                except Exception as e:
+                    self.logger.error(f"Task {task_id}: Encoding error for batch {i}: {e}")
+                    # Continue with next batch rather than failing completely
+                    continue
+                
+                # Brief pause for memory recovery
                 await asyncio.sleep(0.1)
 
-            # Get the actual embeddings from the generator
-            # Note: The encode_pages function now returns real embeddings, we need to capture them
-            self.logger.info(
-                f"Task {task_id}: Generating embeddings using ColPali model"
-            )
-
-            try:
-                # Use model_manager to encode all pages - SMART PERFORMANCE
-                embeddings = []
-                with torch.no_grad():
-                    # Use the same intelligent batch sizing as the model manager
-                    if self.model_manager.device == "mps":
-                        batch_size = 8  # Balanced for 16GB unified memory
-                    elif self.model_manager.device == "cuda":
-                        try:
-                            total_memory = torch.cuda.get_device_properties(
-                                0
-                            ).total_memory / (1024**3)
-                            if total_memory > 16:
-                                batch_size = 12
-                            elif total_memory > 8:
-                                batch_size = 8
-                            else:
-                                batch_size = 4
-                        except:
-                            batch_size = 6
-                    else:
-                        batch_size = 3
-
-                    self.logger.info(
-                        f"Task {task_id}: Using SMART PERFORMANCE batch size: {batch_size}"
-                    )
-
-                    for i in range(0, len(images), batch_size):
-                        batch_images = images[i : i + batch_size]
-
-                        # Process batch
-                        batch_inputs = self.model_manager.processor.process_images(
-                            batch_images
-                        )
-
-                        # Move to device (handle string device properly)
-                        device_obj = self.model_manager._get_device_obj()
-                        for key in batch_inputs:
-                            if isinstance(batch_inputs[key], torch.Tensor):
-                                batch_inputs[key] = batch_inputs[key].to(device_obj)
-
-                        # Get embeddings
-                        batch_embeddings = self.model_manager.model(**batch_inputs)
-
-                        # Store embeddings (keep on device for speed, convert to CPU at the end)
-                        if self.model_manager.device == "cpu":
-                            for emb in batch_embeddings:
-                                embeddings.append(emb.cpu())
-                        else:
-                            for emb in batch_embeddings:
-                                embeddings.append(
-                                    emb.detach()
-                                )  # Keep on device for speed
-
-                        # Update progress
-                        current_batch_progress = (
-                            40.0 + ((i + len(batch_images)) / len(images)) * 30.0
-                        )
-                        progress = StreamingProgress(
-                            task_id=task_id,
-                            progress=current_batch_progress,
-                            current_step=f"Encoded {i + len(batch_images)}/{len(images)} pages",
-                            step_num=4,
-                            total_steps=6,
-                            details=f"Batch {i // batch_size + 1} complete - SMART PERFORMANCE",
-                        )
-                        self.latest_progress[task_id] = progress
-                        await asyncio.sleep(0.05)  # Reduced delay for speed
-
-                    # Convert to CPU at the end for storage
-                    if self.model_manager.device != "cpu":
-                        self.logger.info(
-                            f"Task {task_id}: Converting embeddings to CPU for storage..."
-                        )
-                        cpu_embeddings = []
-                        for emb in embeddings:
-                            cpu_embeddings.append(emb.cpu())
-                        embeddings = cpu_embeddings
-
-            except Exception as encoding_error:
-                self.logger.error(
-                    f"Task {task_id}: ColPali encoding failed: {encoding_error}",
-                    exc_info=True,
-                )
-                raise
-
-            self.logger.info(
-                f"Task {task_id}: Generated {len(embeddings)} real ColPali embeddings"
-            )
+            self.logger.info(f"Task {task_id}: Generated {len(embeddings)} embeddings successfully")
 
             # Store in database
             self.logger.info(f"Task {task_id}: Storing embeddings in LanceDB")
-            async for progress in self.db_manager.store_embeddings(
-                embeddings, metadata
-            ):
+            async for progress in self.db_manager.store_embeddings(embeddings, metadata):
                 progress.task_id = task_id
                 progress.step_num = 5
                 progress.total_steps = 6
-                # Adjust progress to fit within step 5's range (70-95%)
                 progress.progress = 70.0 + (progress.progress / 100.0) * 25.0
                 self.latest_progress[task_id] = progress
-                self.logger.info(
-                    f"Task {task_id}: Storage - {progress.current_step} ({progress.progress:.1f}%)"
-                )
                 await asyncio.sleep(0.1)
 
             # Final completion
@@ -1704,19 +1626,13 @@ class ColPaliHTTPServer:
                 current_step="Ingestion completed successfully",
                 step_num=6,
                 total_steps=6,
-                details=f"Document '{actual_doc_name}' ready for search - {len(images)} pages indexed",
-                throughput=f"{len(images)} pages processed",
+                details=f"Document '{actual_doc_name}' ready for search - {len(embeddings)} pages indexed",
             )
             self.latest_progress[task_id] = final_progress
-            self.logger.info(
-                f"Task {task_id}: COMPLETED - {len(images)} pages indexed for document '{actual_doc_name}'"
-            )
+            self.logger.info(f"Task {task_id}: COMPLETED successfully")
 
         except Exception as e:
-            self.logger.error(
-                f"Task {task_id}: FAILED during processing - {str(e)}",
-                exc_info=True,
-            )
+            self.logger.error(f"Task {task_id}: FAILED - {str(e)}", exc_info=True)
             error_progress = StreamingProgress(
                 task_id=task_id,
                 progress=0.0,
@@ -1727,16 +1643,12 @@ class ColPaliHTTPServer:
             )
             self.latest_progress[task_id] = error_progress
         finally:
-            # Clean up temporary file
+            # Clean up
             try:
                 Path(temp_file_path).unlink(missing_ok=True)
-                self.logger.info(
-                    f"Task {task_id}: Cleaned up temporary file {temp_file_path}"
-                )
+                self.model_manager.cleanup_memory()
             except Exception as cleanup_error:
-                self.logger.warning(
-                    f"Task {task_id}: Failed to cleanup temp file: {cleanup_error}"
-                )
+                self.logger.warning(f"Cleanup error: {cleanup_error}")
 
     async def process_search_background(self, task_id: str, request: SearchRequest):
         """Background processing of search with real-time progress updates"""

@@ -48,8 +48,8 @@ typing_extensions==4.13.2
 aiofiles==23.2.1
 pathlib
 
-# Memory optimization
-psutil==5.9.8
+# Memory optimization and monitoring
+psutil==6.0.0
 
 # Development and testing
 pytest==8.3.4
