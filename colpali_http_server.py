@@ -655,10 +655,10 @@ class LanceDBManager:
 
     async def search_embeddings(self, query_embedding, limit=10, score_threshold=0.8):
         """
-        Search for similar embeddings in the database
+        Search for similar embeddings in the database using ColPali MaxSim scoring
 
         Args:
-            query_embedding: The query embedding vector
+            query_embedding: The query embedding vector (patch-level for ColPali)
             limit: Maximum number of results to return
             score_threshold: Minimum similarity score threshold
 
@@ -669,29 +669,18 @@ class LanceDBManager:
         logger = logging.getLogger(__name__)
 
         logger.info(
-            f"Task {task_id}: Starting search with limit={limit}, score_threshold={score_threshold}"
+            f"Task {task_id}: Starting ColPali search with limit={limit}, score_threshold={score_threshold}"
         )
 
         try:
-            # DEBUG: Check database and table state
-            logger.info(f"Task {task_id}: Database connection: {self.db is not None}")
-            logger.info(f"Task {task_id}: Table initialized: {self.table is not None}")
-
+            # Check database and table state
             if self.db is None:
-                logger.error(
-                    f"Task {task_id}: Database connection is None - initializing..."
-                )
                 await self.initialize()
 
             if self.table is None:
-                logger.error(
-                    f"Task {task_id}: Table is None - attempting to open existing table"
-                )
                 try:
                     self.table = self.db.open_table("documents")
-                    logger.info(f"Task {task_id}: Successfully opened existing table")
                 except Exception as table_error:
-                    logger.error(f"Task {task_id}: Could not open table: {table_error}")
                     yield StreamingProgress(
                         task_id=task_id,
                         progress=0.0,
@@ -702,15 +691,12 @@ class LanceDBManager:
                     )
                     return
 
-            # DEBUG: Check table contents before search
+            # Check if table has data
             try:
                 table_count = len(self.table)
                 logger.info(f"Task {task_id}: Table contains {table_count} rows")
 
                 if table_count == 0:
-                    logger.warning(
-                        f"Task {task_id}: Table is empty - no documents indexed"
-                    )
                     yield StreamingProgress(
                         task_id=task_id,
                         progress=100.0,
@@ -721,317 +707,170 @@ class LanceDBManager:
                         results=[],
                     )
                     return
-
-                # Sample a few rows to verify data structure
-                sample_data = self.table.to_pandas().head(3)
-                logger.info(
-                    f"Task {task_id}: Sample data columns: {list(sample_data.columns)}"
-                )
-                logger.info(f"Task {task_id}: Sample data shape: {sample_data.shape}")
-
-                # Check if vector column exists and has correct format
-                if "vector" in sample_data.columns:
-                    first_vector = (
-                        sample_data["vector"].iloc[0] if len(sample_data) > 0 else None
-                    )
-                    if first_vector is not None:
-                        vector_type = type(first_vector)
-                        vector_len = (
-                            len(first_vector)
-                            if hasattr(first_vector, "__len__")
-                            else "unknown"
-                        )
-                        logger.info(
-                            f"Task {task_id}: Vector column format - type: {vector_type}, length: {vector_len}"
-                        )
-                    else:
-                        logger.warning(
-                            f"Task {task_id}: Vector column exists but first vector is None"
-                        )
-                else:
-                    logger.error(f"Task {task_id}: No 'vector' column found in table!")
-
             except Exception as debug_error:
-                logger.error(
-                    f"Task {task_id}: Error during table debugging: {debug_error}"
-                )
+                logger.error(f"Task {task_id}: Error checking table: {debug_error}")
 
             yield StreamingProgress(
                 task_id=task_id,
                 progress=25.0,
-                current_step="Query encoding",
+                current_step="Query encoding complete",
                 step_num=1,
                 total_steps=4,
-                details="Query encoded successfully",
+                details="Starting ColPali MaxSim search",
             )
 
-            # DEBUG: Analyze query embedding format
-            logger.info(
-                f"Task {task_id}: Query embedding type: {type(query_embedding)}"
-            )
-            logger.info(
-                f"Task {task_id}: Query embedding shape: {getattr(query_embedding, 'shape', 'no shape attr')}"
-            )
+            # Get all documents for ColPali MaxSim scoring
+            logger.info(f"Task {task_id}: Retrieving all documents for MaxSim scoring")
+            all_docs_df = self.table.to_pandas()
+            all_docs = all_docs_df.to_dict("records")
+            
+            logger.info(f"Task {task_id}: Processing {len(all_docs)} documents with ColPali MaxSim")
 
             yield StreamingProgress(
                 task_id=task_id,
                 progress=50.0,
-                current_step="Performing vector similarity search",
+                current_step="Computing ColPali MaxSim scores",
                 step_num=2,
                 total_steps=4,
-                details="Searching embeddings",
+                details=f"Scoring {len(all_docs)} document pages",
             )
 
-            # Perform vector similarity search
-            try:
-                # Check stored vector dimensions first to ensure compatibility
-                if "vector" in sample_data.columns and len(sample_data) > 0:
-                    stored_vector = sample_data["vector"].iloc[0]
-                    stored_vector_length = len(stored_vector) if hasattr(stored_vector, "__len__") else 0
-                    logger.info(f"Task {task_id}: Stored vector length: {stored_vector_length}")
-                else:
-                    stored_vector_length = 0
-                    logger.warning(f"Task {task_id}: Could not determine stored vector length")
-
-                # Ensure query_embedding is in the correct format for LanceDB
-                if hasattr(query_embedding, "numpy"):
-                    search_vector = query_embedding.numpy().flatten().tolist()
-                    logger.info(
-                        f"Task {task_id}: Converted tensor to numpy, flattened length: {len(search_vector)}"
-                    )
-                elif isinstance(query_embedding, torch.Tensor):
-                    search_vector = query_embedding.flatten().tolist()
-                    logger.info(
-                        f"Task {task_id}: Converted torch tensor, flattened length: {len(search_vector)}"
-                    )
-                elif hasattr(query_embedding, "flatten"):
-                    search_vector = query_embedding.flatten()
-                    if hasattr(search_vector, "tolist"):
-                        search_vector = search_vector.tolist()
-                    logger.info(
-                        f"Task {task_id}: Used flatten method, final length: {len(search_vector)}"
-                    )
-                else:
-                    search_vector = query_embedding
-                    logger.info(
-                        f"Task {task_id}: Used query_embedding as-is, type: {type(search_vector)}"
-                    )
-                
-                # Check for dimension mismatch and handle it
-                if stored_vector_length > 0 and len(search_vector) != stored_vector_length:
-                    logger.error(
-                        f"Task {task_id}: DIMENSION MISMATCH - Query vector: {len(search_vector)}, Stored vectors: {stored_vector_length}"
-                    )
-                    
-                    # For ColPali, this suggests different embedding formats
-                    # Try to handle patch-level embeddings properly
-                    if hasattr(query_embedding, 'shape') and len(query_embedding.shape) == 2:
-                        # Query embedding is [patches, dim] - this is ColPali format
-                        logger.info(f"Task {task_id}: Query embedding is patch-level: {query_embedding.shape}")
-                        
-                        # For now, we'll raise an error with helpful information
-                        error_msg = (
-                            f"Vector dimension mismatch detected. "
-                            f"Query vector: {len(search_vector)} dimensions, "
-                            f"Stored vectors: {stored_vector_length} dimensions. "
-                            f"This suggests your stored embeddings and query embeddings use different formats. "
-                            f"You may need to re-index your documents with consistent embedding format."
-                        )
-                        raise ValueError(error_msg)
-                    else:
-                        # Generic dimension mismatch
-                        error_msg = (
-                            f"Vector dimension mismatch: query {len(search_vector)} != stored {stored_vector_length}. "
-                            f"Please re-index your documents or check your embedding configuration."
-                        )
-                        raise ValueError(error_msg)
-
-                # Ensure it's a list of numbers
-                if not isinstance(search_vector, list):
-                    search_vector = list(search_vector)
-                    
-                # Final validation
-                logger.info(
-                    f"Task {task_id}: Final validation - Query vector length: {len(search_vector)}, Expected: {stored_vector_length}"
-                )
-
-                logger.info(
-                    f"Task {task_id}: Final search vector - type: {type(search_vector)}, length: {len(search_vector)}"
-                )
-                logger.info(
-                    f"Task {task_id}: Search vector sample (first 5): {search_vector[:5]}"
-                )
-
-                # Use LanceDB search with proper format and specify vector column
-                logger.info(
-                    f"Task {task_id}: Executing LanceDB search with limit={limit}"
-                )
-                logger.info(
-                    f"Task {task_id}: Creating search query with vector_column_name='vector'"
-                )
-
+            # Compute MaxSim scores for all documents
+            scored_results = []
+            
+            for i, doc in enumerate(all_docs):
                 try:
-                    search_query = self.table.search(
-                        search_vector, vector_column_name="vector"
-                    ).limit(limit)
-                    logger.info(
-                        f"Task {task_id}: Search query object created successfully"
-                    )
-                except Exception as query_error:
-                    logger.error(
-                        f"Task {task_id}: Failed to create search query: {query_error}"
-                    )
-                    raise
-
-                logger.info(
-                    f"Task {task_id}: Converting search query to pandas DataFrame..."
-                )
-                try:
-                    results_df = search_query.to_pandas()
-                    logger.info(
-                        f"Task {task_id}: DataFrame created - shape: {results_df.shape}, columns: {list(results_df.columns)}"
-                    )
-
-                    results = results_df.to_dict("records")
-                    logger.info(
-                        f"Task {task_id}: Converted to records - count: {len(results)}"
-                    )
-
-                except Exception as pandas_error:
-                    logger.error(
-                        f"Task {task_id}: Failed to convert to pandas: {pandas_error}"
-                    )
-                    raise
-
-                # DEBUG: Log details about search results
-                if results:
-                    logger.info(
-                        f"Task {task_id}: First result keys: {list(results[0].keys())}"
-                    )
-                    for i, result in enumerate(results[:3]):  # Log first 3 results
-                        distance = result.get("_distance", "no_distance")
-                        # Use corrected similarity calculation for ColPali
-                        if isinstance(distance, (int, float)):
-                            cosine_similarity = max(0, 1 - (distance**2) / 2)
-                            logger.info(
-                                f"Task {task_id}: Result {i}: l2_distance={distance:.4f}, cosine_similarity={cosine_similarity:.4f}, doc={result.get('doc_name', 'no_doc')}, page={result.get('page_num', 'no_page')}"
-                            )
+                    # Reconstruct the original embedding shape from stored data
+                    stored_vector = doc.get("vector", [])
+                    embedding_shape_str = doc.get("embedding_shape", "unknown")
+                    
+                    # Parse the stored shape (e.g., "torch.Size([704, 128])")
+                    if "torch.Size([" in embedding_shape_str and "])" in embedding_shape_str:
+                        # Extract dimensions from string like "torch.Size([704, 128])"
+                        shape_str = embedding_shape_str.replace("torch.Size([", "").replace("])", "")
+                        dims = [int(d.strip()) for d in shape_str.split(",")]
+                        if len(dims) == 2:
+                            patches, dim = dims
+                            
+                            # Reshape flattened vector back to [patches, dim]
+                            if len(stored_vector) == patches * dim:
+                                import numpy as np
+                                doc_embedding_np = np.array(stored_vector).reshape(patches, dim)
+                                doc_embedding = torch.from_numpy(doc_embedding_np).float()
+                                
+                                # Compute MaxSim score
+                                maxsim_score = self.compute_maxsim_score(query_embedding, doc_embedding)
+                                
+                                scored_results.append({
+                                    'doc': doc,
+                                    'score': maxsim_score,
+                                    'doc_name': doc.get('doc_name', ''),
+                                    'page_num': doc.get('page_num', 0)
+                                })
+                                
+                                logger.debug(f"Task {task_id}: Doc {i} MaxSim score: {maxsim_score:.4f}")
+                            else:
+                                logger.warning(f"Task {task_id}: Vector length mismatch for doc {i}")
                         else:
-                            logger.info(
-                                f"Task {task_id}: Result {i}: distance={distance}, doc={result.get('doc_name', 'no_doc')}, page={result.get('page_num', 'no_page')}"
-                            )
-                else:
-                    logger.warning(
-                        f"Task {task_id}: No results returned from vector search"
-                    )
+                            logger.warning(f"Task {task_id}: Invalid shape format for doc {i}: {embedding_shape_str}")
+                    else:
+                        logger.warning(f"Task {task_id}: Could not parse embedding shape for doc {i}: {embedding_shape_str}")
+                        
+                except Exception as scoring_error:
+                    logger.error(f"Task {task_id}: Error scoring doc {i}: {scoring_error}")
+                    continue
 
-            except Exception as search_error:
-                logger.error(
-                    f"Task {task_id}: Vector search failed: {str(search_error)}",
-                    exc_info=True,
-                )
-                yield StreamingProgress(
-                    task_id=task_id,
-                    progress=0.0,
-                    current_step="Search failed",
-                    step_num=0,
-                    total_steps=1,
-                    error=f"Vector search failed: {str(search_error)}",
-                )
-                return
+            logger.info(f"Task {task_id}: Computed MaxSim scores for {len(scored_results)} documents")
 
             yield StreamingProgress(
                 task_id=task_id,
                 progress=80.0,
-                current_step="Processing results",
+                current_step="Ranking and filtering results",
                 step_num=3,
                 total_steps=4,
-                details=f"Found {len(results)} potential matches",
+                details=f"Found {len(scored_results)} scored results",
             )
 
-            # DEBUG: Log score filtering process
-            logger.info(
-                f"Task {task_id}: Applying score threshold filter: {score_threshold}"
-            )
-            logger.info(
-                f"Task {task_id}: PRODUCTION MODE - Using real ColPali embeddings"
-            )
-            original_count = len(results)
+            # Sort by MaxSim score (higher is better)
+            scored_results.sort(key=lambda x: x['score'], reverse=True)
+            
+            # Apply score threshold and limit
+            filtered_results = []
+            for result in scored_results:
+                if result['score'] >= score_threshold:
+                    filtered_results.append(result)
+                if len(filtered_results) >= limit:
+                    break
+            
+            logger.info(f"Task {task_id}: After filtering: {len(filtered_results)} results (threshold: {score_threshold})")
 
-            # Filter by score threshold if needed
-            if score_threshold > 0:
-                filtered_results = []
-                for r in results:
-                    distance = r.get("_distance", float("inf"))
-                    # For ColPali embeddings, use cosine similarity
-                    # LanceDB returns L2 distance, convert to cosine similarity
-                    # Assuming normalized embeddings: cosine_sim = 1 - (l2_distance^2 / 2)
-                    cosine_similarity = max(0, 1 - (distance**2) / 2)
-                    logger.debug(
-                        f"Task {task_id}: Checking result - l2_distance: {distance:.4f}, cosine_similarity: {cosine_similarity:.4f}, threshold: {score_threshold}"
-                    )
-                    if cosine_similarity >= score_threshold:
-                        filtered_results.append(r)
-
-                results = filtered_results
-                logger.info(
-                    f"Task {task_id}: Score filtering: {original_count} -> {len(results)} results (threshold: {score_threshold})"
-                )
-            else:
-                logger.info(
-                    f"Task {task_id}: No score filtering applied (threshold: {score_threshold})"
-                )
-
-            # Format results
+            # Format final results
             search_results = []
-            for i, row in enumerate(results):
-                distance = row.get("_distance", float("inf"))
-
-                # For ColPali embeddings, convert L2 distance to cosine similarity
-                # Assuming normalized embeddings: cosine_sim = 1 - (l2_distance^2 / 2)
-                cosine_similarity = max(0, 1 - (distance**2) / 2)
-
-                text_content = row.get("text_content", "")
+            for result in filtered_results:
+                doc = result['doc']
+                text_content = doc.get("text_content", "")
                 snippet = text_content[:200] if text_content else "No text content"
 
                 search_result = SearchResult(
-                    page_num=row.get("page_num", 0),
-                    doc_name=row.get("doc_name", ""),
-                    score=cosine_similarity,  # Use cosine similarity score
+                    page_num=doc.get("page_num", 0),
+                    doc_name=doc.get("doc_name", ""),
+                    score=result['score'],
                     snippet=snippet,
                 )
                 search_results.append(search_result)
-
-                logger.debug(
-                    f"Task {task_id}: Result {i}: {search_result.doc_name}, page {search_result.page_num}, cosine_sim {cosine_similarity:.4f} (l2_distance: {distance:.4f})"
-                )
 
             logger.info(f"Task {task_id}: Final results: {len(search_results)} matches")
 
             yield StreamingProgress(
                 task_id=task_id,
                 progress=100.0,
-                current_step="Search completed",
+                current_step="ColPali search completed",
                 step_num=4,
                 total_steps=4,
-                details=f"Found {len(search_results)} relevant matches",
-                results=[
-                    result.__dict__ for result in search_results
-                ],  # Convert to dict for JSON serialization
+                details=f"Found {len(search_results)} relevant matches using MaxSim",
+                results=[result.__dict__ for result in search_results],
             )
 
         except Exception as e:
-            logger.error(
-                f"Task {task_id}: Search failed with exception: {str(e)}", exc_info=True
-            )
+            logger.error(f"Task {task_id}: ColPali search failed: {str(e)}", exc_info=True)
             yield StreamingProgress(
                 task_id=task_id,
                 progress=0.0,
                 current_step="Search failed",
                 step_num=0,
                 total_steps=1,
-                error=f"Search failed: {str(e)}",
+                error=f"ColPali search failed: {str(e)}",
             )
+    
+    def compute_maxsim_score(self, query_embedding: torch.Tensor, doc_embedding: torch.Tensor) -> float:
+        """
+        Compute MaxSim score between query and document embeddings for ColPali
+        """
+        try:
+            # Ensure both embeddings are 2D [patches, dim]
+            if query_embedding.dim() != 2:
+                raise ValueError(f"Query embedding must be 2D [patches, dim], got shape {query_embedding.shape}")
+            if doc_embedding.dim() != 2:
+                raise ValueError(f"Document embedding must be 2D [patches, dim], got shape {doc_embedding.shape}")
+            
+            # Normalize embeddings (important for cosine similarity)
+            query_norm = F.normalize(query_embedding, p=2, dim=1)  # [query_patches, dim]
+            doc_norm = F.normalize(doc_embedding, p=2, dim=1)      # [doc_patches, dim]
+            
+            # Compute similarity matrix: [query_patches, doc_patches]
+            sim_matrix = torch.mm(query_norm, doc_norm.t())
+            
+            # MaxSim: for each query patch, find max similarity across doc patches
+            max_sims = torch.max(sim_matrix, dim=1)[0]  # [query_patches]
+            
+            # Sum the max similarities (ColPali approach)
+            maxsim_score = torch.sum(max_sims).item()
+            
+            return maxsim_score
+            
+        except Exception as e:
+            logging.getLogger(__name__).error(f"MaxSim scoring failed: {e}")
+            return 0.0
 
     async def store_embeddings(
         self, embeddings: List[torch.Tensor], metadata: List[Dict]
