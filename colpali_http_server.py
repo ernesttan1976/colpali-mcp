@@ -72,6 +72,7 @@ class SearchResult:
     score: float
     snippet: str
     image_path: Optional[str] = None
+    full_text: Optional[str] = None
 
 
 # Pydantic models for API
@@ -868,6 +869,7 @@ class LanceDBManager:
                     score=result["score"],
                     snippet=snippet,
                     image_path=image_url,  # Use HTTP URL instead of file path
+                    full_text=text_content,  # Include full text in response
                 )
                 search_results.append(search_result)
 

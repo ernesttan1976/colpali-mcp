@@ -1552,7 +1552,11 @@ This would open a sophisticated document viewer with:
                                     </div>
                                 </div>
                                 <div class="result-actions">
-                                    <button class="btn btn-secondary" onclick="colpaliUI.copyFullText('${result.doc_name}', ${result.page_num})">
+                                    <button class="btn btn-secondary" 
+                                            data-doc-name="${result.doc_name}" 
+                                            data-page-num="${result.page_num}" 
+                                            data-full-text="${(result.full_text || '').replace(/"/g, '&quot;')}"
+                                            onclick="colpaliUI.copyFullTextFromButton(this)">
                                         📋 Copy Text
                                     </button>
                                     <button class="btn btn-secondary" onclick="colpaliUI.copyCitation('${citation.replace(/'/g, '\\\'')}')">
@@ -1895,23 +1899,43 @@ This would open a sophisticated document viewer with:
                 }
             }
 
-            async copyFullText(docName, pageNum) {
+            async copyFullTextFromButton(buttonElement) {
+                const docName = buttonElement.dataset.docName;
+                const pageNum = parseInt(buttonElement.dataset.pageNum);
+                const fullText = buttonElement.dataset.fullText;
+                
+                await this.copyFullText(docName, pageNum, fullText);
+            }
+
+            async copyFullText(docName, pageNum, fullTextFromResult = null) {
                 try {
-                    // Call API to get full text for the page
-                    const response = await fetch(`${this.apiBase}/document/${encodeURIComponent(docName)}/page/${pageNum}/text`);
+                    let fullText = fullTextFromResult;
                     
-                    if (!response.ok) {
-                        throw new Error(`Failed to fetch full text: ${response.status}`);
+                    // If full text wasn't provided from search results, fetch it from API
+                    if (!fullText) {
+                        const response = await fetch(`${this.apiBase}/document/${encodeURIComponent(docName)}/page/${pageNum}/text`);
+                        
+                        if (!response.ok) {
+                            throw new Error(`Failed to fetch full text: ${response.status} ${response.statusText}`);
+                        }
+                        
+                        const data = await response.json();
+                        console.log('Received full text data:', data);
+                        
+                        // Try multiple possible field names for the text content
+                        fullText = data.text_content || data.text || data.content || 'No text available for this page';
                     }
                     
-                    const data = await response.json();
-                    const fullText = data.text || 'No text available for this page';
+                    if (!fullText || fullText.trim() === '' || fullText === 'No text available for this page') {
+                        this.showTemporaryStatus('No text content available for this page', 'warning');
+                        return;
+                    }
                     
                     await navigator.clipboard.writeText(fullText);
-                    this.showTemporaryStatus("Full text copied to clipboard!", 'success');
+                    this.showTemporaryStatus(`Full text copied to clipboard! (${fullText.length} characters)`, 'success');
                 } catch (err) {
                     console.error('Failed to copy full text: ', err);
-                    this.showTemporaryStatus("Failed to copy full text", 'error');
+                    this.showTemporaryStatus(`Failed to copy full text: ${err.message}`, 'error');
                 }
             }
 
