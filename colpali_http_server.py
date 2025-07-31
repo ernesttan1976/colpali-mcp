@@ -907,33 +907,52 @@ class ColPaliHTTPServer:
                     )
                     await asyncio.sleep(0.1)  # Allow other tasks to run
 
-            # Extract PDF pages
+            # Extract PDF pages - CAPTURE THE ACTUAL DATA
             self.logger.info(f"Task {task_id}: Starting PDF page extraction")
+            
+            # Open PDF and extract all pages directly
+            doc = fitz.open(temp_file_path)
+            total_pages = len(doc)
+            
+            self.logger.info(f"Task {task_id}: Processing {total_pages} pages from PDF")
+            
             images = []
             metadata = []
-            async for progress in self.pdf_processor.extract_pages(temp_file_path):
-                progress.task_id = task_id
-                progress.step_num = 3
-                progress.total_steps = 6
-                # Adjust progress to fit within step 3's range (20-40%)
-                progress.progress = 20.0 + (progress.progress / 100.0) * 20.0
-                self.latest_progress[task_id] = progress
-                self.logger.info(
-                    f"Task {task_id}: PDF extraction - {progress.current_step} ({progress.progress:.1f}%)"
-                )
-                await asyncio.sleep(0.1)
-
-            # Mock data for demo - replace with actual extracted data
-            images = [Image.new("RGB", (800, 600)) for _ in range(3)]
-            metadata = [
-                {
-                    "page_num": i + 1,
+            
+            for page_num in range(total_pages):
+                page = doc[page_num]
+                
+                # Extract image
+                pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))  # 2x zoom
+                img_data = pix.tobytes("png")
+                image = Image.open(io.BytesIO(img_data))
+                images.append(image)
+                
+                # Extract text
+                text_content = page.get_text()
+                
+                metadata.append({
+                    "page_num": page_num + 1,
                     "doc_name": actual_doc_name,
-                    "text_content": f"Page {i + 1} content",
-                }
-                for i in range(3)
-            ]
-            self.logger.info(f"Task {task_id}: Extracted {len(images)} pages")
+                    "text_content": text_content,
+                    "file_size": len(img_data)  # Store image size
+                })
+                
+                # Update progress for each page
+                page_progress = 20.0 + ((page_num + 1) / total_pages) * 20.0
+                current_progress = StreamingProgress(
+                    task_id=task_id,
+                    progress=page_progress,
+                    current_step=f"Extracted page {page_num + 1}/{total_pages}",
+                    step_num=3,
+                    total_steps=6,
+                    details=f"Image: {image.size}, Text: {len(text_content)} chars",
+                )
+                self.latest_progress[task_id] = current_progress
+                await asyncio.sleep(0.05)  # Brief pause to allow progress updates
+        
+        doc.close()
+        self.logger.info(f"Task {task_id}: Extracted {len(images)} pages successfully")
 
             # Encode pages
             self.logger.info(
@@ -982,7 +1001,7 @@ class ColPaliHTTPServer:
                 current_step="Ingestion completed successfully",
                 step_num=6,
                 total_steps=6,
-                details=f"Document '{actual_doc_name}' ready for search",
+                details=f"Document '{actual_doc_name}' ready for search - {len(images)} pages indexed",
                 throughput=f"{len(images)} pages processed",
             )
             self.latest_progress[task_id] = final_progress
