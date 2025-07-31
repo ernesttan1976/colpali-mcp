@@ -248,7 +248,7 @@ class ColPaliModelManager:
 class LanceDBManager:
     """Handles LanceDB operations"""
 
-    def __init__(self, db_path: str = "./colpali_db"):
+    def __init__(self, db_path: str = "./data/embeddings_db"):
         self.db_path = db_path
         self.db = None
         self.table = None
