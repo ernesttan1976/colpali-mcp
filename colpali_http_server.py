@@ -276,12 +276,12 @@ class ColPaliModelManager:
 
         # MEMORY-OPTIMIZED batch sizing
         initial_batch_size = 1  # Start very conservative
-        max_batch_size = 4      # Never exceed this
+        max_batch_size = 4  # Never exceed this
         current_batch_size = initial_batch_size
-        
+
         # Memory monitoring
         memory_threshold = 85  # Reduce batch if memory > 85%
-        
+
         self.logger.info(f"Starting with conservative batch size: {current_batch_size}")
 
         try:
@@ -297,7 +297,7 @@ class ColPaliModelManager:
                                 torch.mps.empty_cache()
                             elif self.device == "cuda":
                                 torch.cuda.empty_cache()
-                            
+
                             # Reduce batch size if memory is high
                             if current_batch_size > 1:
                                 current_batch_size = max(1, current_batch_size - 1)
@@ -329,19 +329,23 @@ class ColPaliModelManager:
                     max_retries = 3
                     retry_count = 0
                     batch_success = False
-                    
+
                     while retry_count < max_retries and not batch_success:
                         try:
                             # Process batch of images
-                            if COLPALI_ENGINE_AVAILABLE and hasattr(self.processor, "process_images"):
-                                batch_inputs = self.processor.process_images(batch_images)
+                            if COLPALI_ENGINE_AVAILABLE and hasattr(
+                                self.processor, "process_images"
+                            ):
+                                batch_inputs = self.processor.process_images(
+                                    batch_images
+                                )
                             else:
                                 batch_inputs = self.processor(
-                                    images=batch_images, 
-                                    return_tensors="pt", 
+                                    images=batch_images,
+                                    return_tensors="pt",
                                     padding=True,
                                     max_length=512,  # Limit sequence length
-                                    truncation=True
+                                    truncation=True,
                                 )
 
                             # Move to device with memory check
@@ -354,28 +358,34 @@ class ColPaliModelManager:
                             try:
                                 batch_embeddings = self.model(**batch_inputs)
                                 batch_success = True
-                                
+
                                 # Process embeddings immediately to free memory
                                 for emb in batch_embeddings:
                                     # Move to CPU immediately to free GPU/MPS memory
                                     embeddings.append(emb.cpu().detach())
-                                
+
                                 # Clean up GPU/MPS memory immediately
                                 del batch_embeddings
                                 del batch_inputs
-                                
+
                                 if self.device == "mps":
                                     torch.mps.empty_cache()
                                 elif self.device == "cuda":
                                     torch.cuda.empty_cache()
-                                
+
                                 gc.collect()
-                                
+
                             except RuntimeError as inference_error:
                                 error_msg = str(inference_error).lower()
-                                if "buffer size" in error_msg or "memory" in error_msg or "out of memory" in error_msg:
-                                    self.logger.error(f"Memory error during inference: {inference_error}")
-                                    
+                                if (
+                                    "buffer size" in error_msg
+                                    or "memory" in error_msg
+                                    or "out of memory" in error_msg
+                                ):
+                                    self.logger.error(
+                                        f"Memory error during inference: {inference_error}"
+                                    )
+
                                     # Clean up memory
                                     del batch_inputs
                                     if self.device == "mps":
@@ -383,7 +393,7 @@ class ColPaliModelManager:
                                     elif self.device == "cuda":
                                         torch.cuda.empty_cache()
                                     gc.collect()
-                                    
+
                                     # If we're already at batch size 1, we can't reduce further
                                     if len(batch_images) == 1:
                                         raise RuntimeError(
@@ -393,7 +403,9 @@ class ColPaliModelManager:
                                         )
                                     else:
                                         # Split the batch and retry
-                                        batch_images = batch_images[:len(batch_images)//2]
+                                        batch_images = batch_images[
+                                            : len(batch_images) // 2
+                                        ]
                                         current_batch_size = len(batch_images)
                                         retry_count += 1
                                         self.logger.warning(
@@ -402,16 +414,20 @@ class ColPaliModelManager:
                                         continue
                                 else:
                                     raise
-                                    
+
                         except Exception as process_error:
                             retry_count += 1
                             if retry_count >= max_retries:
-                                raise RuntimeError(f"Failed to process batch after {max_retries} attempts: {process_error}")
-                            
-                            self.logger.warning(f"Batch processing failed, retry {retry_count}: {process_error}")
+                                raise RuntimeError(
+                                    f"Failed to process batch after {max_retries} attempts: {process_error}"
+                                )
+
+                            self.logger.warning(
+                                f"Batch processing failed, retry {retry_count}: {process_error}"
+                            )
                             # Reduce batch size for retry
                             if len(batch_images) > 1:
-                                batch_images = batch_images[:len(batch_images)//2]
+                                batch_images = batch_images[: len(batch_images) // 2]
                             await asyncio.sleep(0.5)  # Brief pause before retry
 
                     # Brief pause between batches to allow system recovery
@@ -431,7 +447,9 @@ class ColPaliModelManager:
                 throughput=f"Average: {avg_throughput:.1f} pages/sec",
             )
 
-            self.logger.info(f"Successfully encoded {len(embeddings)} pages with memory optimization")
+            self.logger.info(
+                f"Successfully encoded {len(embeddings)} pages with memory optimization"
+            )
 
         except Exception as e:
             self.logger.error(f"Failed to encode pages: {str(e)}", exc_info=True)
@@ -565,6 +583,34 @@ class ColPaliModelManager:
             torch.mps.empty_cache()
         elif self.device == "cuda":
             torch.cuda.empty_cache()
+    
+    def maxsim_score(self, query_embedding: torch.Tensor, doc_embedding: torch.Tensor) -> float:
+        """Compute MaxSim score between query and document embeddings for ColPali"""
+        try:
+            # Ensure both embeddings are 2D [patches, dim]
+            if query_embedding.dim() != 2:
+                raise ValueError(f"Query embedding must be 2D [patches, dim], got shape {query_embedding.shape}")
+            if doc_embedding.dim() != 2:
+                raise ValueError(f"Document embedding must be 2D [patches, dim], got shape {doc_embedding.shape}")
+            
+            # Compute similarity matrix: [query_patches, doc_patches]
+            sim_matrix = torch.mm(query_embedding, doc_embedding.t())
+            
+            # MaxSim: for each query patch, find max similarity across doc patches
+            max_sims = torch.max(sim_matrix, dim=1)[0]  # [query_patches]
+            
+            # Sum the max similarities (ColPali approach)
+            maxsim_score = torch.sum(max_sims).item()
+            
+            return maxsim_score
+            
+        except Exception as e:
+            self.logger.error(f"MaxSim scoring failed: {e}")
+            return 0.0
+    
+    def should_use_maxsim(self, embedding: torch.Tensor) -> bool:
+        """Determine if we should use MaxSim scoring based on embedding shape"""
+        return embedding.dim() == 2 and embedding.shape[0] > 1  # Multiple patches
 
 
 class LanceDBManager:
@@ -591,7 +637,7 @@ class LanceDBManager:
 
                 if "documents" in existing_tables:
                     self.table = self.db.open_table("documents")
-                    row_count = self.table.count_rows()
+                    row_count = len(self.table)
                     logger.info(
                         f"Opened existing 'documents' table with {row_count} rows"
                     )
@@ -658,7 +704,7 @@ class LanceDBManager:
 
             # DEBUG: Check table contents before search
             try:
-                table_count = self.table.count_rows()
+                table_count = len(self.table)
                 logger.info(f"Task {task_id}: Table contains {table_count} rows")
 
                 if table_count == 0:
@@ -738,6 +784,15 @@ class LanceDBManager:
 
             # Perform vector similarity search
             try:
+                # Check stored vector dimensions first to ensure compatibility
+                if "vector" in sample_data.columns and len(sample_data) > 0:
+                    stored_vector = sample_data["vector"].iloc[0]
+                    stored_vector_length = len(stored_vector) if hasattr(stored_vector, "__len__") else 0
+                    logger.info(f"Task {task_id}: Stored vector length: {stored_vector_length}")
+                else:
+                    stored_vector_length = 0
+                    logger.warning(f"Task {task_id}: Could not determine stored vector length")
+
                 # Ensure query_embedding is in the correct format for LanceDB
                 if hasattr(query_embedding, "numpy"):
                     search_vector = query_embedding.numpy().flatten().tolist()
@@ -761,10 +816,44 @@ class LanceDBManager:
                     logger.info(
                         f"Task {task_id}: Used query_embedding as-is, type: {type(search_vector)}"
                     )
+                
+                # Check for dimension mismatch and handle it
+                if stored_vector_length > 0 and len(search_vector) != stored_vector_length:
+                    logger.error(
+                        f"Task {task_id}: DIMENSION MISMATCH - Query vector: {len(search_vector)}, Stored vectors: {stored_vector_length}"
+                    )
+                    
+                    # For ColPali, this suggests different embedding formats
+                    # Try to handle patch-level embeddings properly
+                    if hasattr(query_embedding, 'shape') and len(query_embedding.shape) == 2:
+                        # Query embedding is [patches, dim] - this is ColPali format
+                        logger.info(f"Task {task_id}: Query embedding is patch-level: {query_embedding.shape}")
+                        
+                        # For now, we'll raise an error with helpful information
+                        error_msg = (
+                            f"Vector dimension mismatch detected. "
+                            f"Query vector: {len(search_vector)} dimensions, "
+                            f"Stored vectors: {stored_vector_length} dimensions. "
+                            f"This suggests your stored embeddings and query embeddings use different formats. "
+                            f"You may need to re-index your documents with consistent embedding format."
+                        )
+                        raise ValueError(error_msg)
+                    else:
+                        # Generic dimension mismatch
+                        error_msg = (
+                            f"Vector dimension mismatch: query {len(search_vector)} != stored {stored_vector_length}. "
+                            f"Please re-index your documents or check your embedding configuration."
+                        )
+                        raise ValueError(error_msg)
 
                 # Ensure it's a list of numbers
                 if not isinstance(search_vector, list):
                     search_vector = list(search_vector)
+                    
+                # Final validation
+                logger.info(
+                    f"Task {task_id}: Final validation - Query vector length: {len(search_vector)}, Expected: {stored_vector_length}"
+                )
 
                 logger.info(
                     f"Task {task_id}: Final search vector - type: {type(search_vector)}, length: {len(search_vector)}"
@@ -968,15 +1057,21 @@ class LanceDBManager:
 
         data = []
         for i, (embedding, meta) in enumerate(zip(embeddings, metadata)):
+            # Log embedding format for debugging
+            embedding_shape = getattr(embedding, 'shape', 'no shape')
+            flattened_vector = embedding.numpy().flatten().tolist()
+            logger.info(f"Storing embedding {i}: original shape {embedding_shape}, flattened length {len(flattened_vector)}")
+            
             data.append(
                 {
                     "id": f"{meta['doc_name']}_page_{meta['page_num']}",
-                    "vector": embedding.numpy().flatten().tolist(),
+                    "vector": flattened_vector,
                     "doc_name": meta["doc_name"],
                     "page_num": meta["page_num"],
                     "text_content": meta.get("text_content", ""),
                     "created_at": current_time,
                     "file_size": meta.get("file_size", "unknown"),
+                    "embedding_shape": str(embedding_shape),  # Store original shape for reference
                 }
             )
 
@@ -1019,13 +1114,17 @@ class LanceDBManager:
                             # Table exists, try to open it again with different approach
                             self.table = self.db.open_table("documents")
                             self.table.add(data)
-                            logger.info(f"Successfully added to existing table on retry")
+                            logger.info(
+                                f"Successfully added to existing table on retry"
+                            )
                         else:
                             # Table doesn't exist, create it
                             self.table = self.db.create_table("documents", data)
                             logger.info(f"Created new table on retry")
                     except Exception as final_error:
-                        raise Exception(f"Failed all storage attempts: open_error={open_error}, create_error={create_error}, final_error={final_error}")
+                        raise Exception(
+                            f"Failed all storage attempts: open_error={open_error}, create_error={create_error}, final_error={final_error}"
+                        )
 
             yield StreamingProgress(
                 task_id=task_id,
@@ -1434,82 +1533,115 @@ class ColPaliHTTPServer:
                 ]
             }
 
-@self.app.delete("/documents/{doc_name}")
+        @self.app.delete("/documents/{doc_name}")
         async def delete_document(doc_name: str):
             """Delete a document and all its embeddings"""
             task_id = f"delete_{uuid.uuid4().hex[:8]}"
-            self.logger.info(f"Starting document deletion task {task_id} for: {doc_name}")
-            
+            self.logger.info(
+                f"Starting document deletion task {task_id} for: {doc_name}"
+            )
+
             try:
                 # Initialize database if needed
                 if self.db_manager.db is None:
                     await self.db_manager.initialize()
-                    
+
                 if self.db_manager.table is None:
                     self.logger.error(f"Task {task_id}: No documents table found")
-                    raise HTTPException(status_code=404, detail="No documents table found")
-                
+                    raise HTTPException(
+                        status_code=404, detail="No documents table found"
+                    )
+
                 # Check if document exists
                 try:
                     # Query to find documents with this name
                     all_docs = self.db_manager.table.to_pandas()
-                    doc_rows = all_docs[all_docs['doc_name'] == doc_name]
-                    
+                    doc_rows = all_docs[all_docs["doc_name"] == doc_name]
+
                     if len(doc_rows) == 0:
-                        self.logger.warning(f"Task {task_id}: Document '{doc_name}' not found")
-                        raise HTTPException(status_code=404, detail=f"Document '{doc_name}' not found")
-                    
-                    self.logger.info(f"Task {task_id}: Found {len(doc_rows)} embeddings to delete for '{doc_name}'")
-                    
+                        self.logger.warning(
+                            f"Task {task_id}: Document '{doc_name}' not found"
+                        )
+                        raise HTTPException(
+                            status_code=404, detail=f"Document '{doc_name}' not found"
+                        )
+
+                    self.logger.info(
+                        f"Task {task_id}: Found {len(doc_rows)} embeddings to delete for '{doc_name}'"
+                    )
+
                     # Delete rows with this document name
                     # LanceDB doesn't have a direct delete by filter, so we need to filter and recreate
-                    remaining_docs = all_docs[all_docs['doc_name'] != doc_name]
-                    
+                    remaining_docs = all_docs[all_docs["doc_name"] != doc_name]
+
                     if len(remaining_docs) == 0:
                         # If no documents remain, drop the table entirely
                         try:
                             self.db_manager.db.drop_table("documents")
                             self.db_manager.table = None
-                            self.logger.info(f"Task {task_id}: Dropped empty documents table")
+                            self.logger.info(
+                                f"Task {task_id}: Dropped empty documents table"
+                            )
                         except Exception as drop_error:
-                            self.logger.warning(f"Task {task_id}: Could not drop table: {drop_error}")
+                            self.logger.warning(
+                                f"Task {task_id}: Could not drop table: {drop_error}"
+                            )
                     else:
                         # Recreate table with remaining data
                         try:
                             # Convert back to records format
-                            remaining_data = remaining_docs.to_dict('records')
-                            
+                            remaining_data = remaining_docs.to_dict("records")
+
                             # Drop old table and create new one
                             self.db_manager.db.drop_table("documents")
-                            self.db_manager.table = self.db_manager.db.create_table("documents", remaining_data)
-                            
-                            self.logger.info(f"Task {task_id}: Recreated table with {len(remaining_data)} remaining embeddings")
+                            self.db_manager.table = self.db_manager.db.create_table(
+                                "documents", remaining_data
+                            )
+
+                            self.logger.info(
+                                f"Task {task_id}: Recreated table with {len(remaining_data)} remaining embeddings"
+                            )
                         except Exception as recreate_error:
-                            self.logger.error(f"Task {task_id}: Failed to recreate table: {recreate_error}")
-                            raise HTTPException(status_code=500, detail=f"Failed to recreate table: {recreate_error}")
-                    
+                            self.logger.error(
+                                f"Task {task_id}: Failed to recreate table: {recreate_error}"
+                            )
+                            raise HTTPException(
+                                status_code=500,
+                                detail=f"Failed to recreate table: {recreate_error}",
+                            )
+
                     deleted_count = len(doc_rows)
                     remaining_count = len(remaining_docs)
-                    
-                    self.logger.info(f"Task {task_id}: Successfully deleted {deleted_count} embeddings for '{doc_name}', {remaining_count} embeddings remain")
-                    
+
+                    self.logger.info(
+                        f"Task {task_id}: Successfully deleted {deleted_count} embeddings for '{doc_name}', {remaining_count} embeddings remain"
+                    )
+
                     return {
                         "task_id": task_id,
                         "status": "completed",
                         "message": f"Document '{doc_name}' deleted successfully",
                         "deleted_embeddings": deleted_count,
-                        "remaining_embeddings": remaining_count
+                        "remaining_embeddings": remaining_count,
                     }
-                    
+
                 except Exception as query_error:
-                    self.logger.error(f"Task {task_id}: Database query error: {query_error}")
-                    raise HTTPException(status_code=500, detail=f"Database error: {query_error}")
-                    
+                    self.logger.error(
+                        f"Task {task_id}: Database query error: {query_error}"
+                    )
+                    raise HTTPException(
+                        status_code=500, detail=f"Database error: {query_error}"
+                    )
+
             except HTTPException:
                 raise
             except Exception as e:
-                self.logger.error(f"Task {task_id}: Deletion failed: {str(e)}", exc_info=True)
-                raise HTTPException(status_code=500, detail=f"Deletion failed: {str(e)}")
+                self.logger.error(
+                    f"Task {task_id}: Deletion failed: {str(e)}", exc_info=True
+                )
+                raise HTTPException(
+                    status_code=500, detail=f"Deletion failed: {str(e)}"
+                )
 
         @self.app.get("/logs")
         async def get_recent_logs():
@@ -1600,8 +1732,10 @@ class ColPaliHTTPServer:
             # Extract PDF pages directly
             doc = fitz.open(temp_file_path)
             total_pages = len(doc)
-            
-            self.logger.info(f"Task {task_id}: Processing all {total_pages} pages from PDF")
+
+            self.logger.info(
+                f"Task {task_id}: Processing all {total_pages} pages from PDF"
+            )
 
             images = []
             metadata = []
@@ -1614,22 +1748,24 @@ class ColPaliHTTPServer:
                 pix = page.get_pixmap(matrix=fitz.Matrix(zoom_factor, zoom_factor))
                 img_data = pix.tobytes("png")
                 image = Image.open(io.BytesIO(img_data))
-                
+
                 # Optionally resize image if too large
                 max_size = (1024, 1024)  # Adjust as needed
                 if image.size[0] > max_size[0] or image.size[1] > max_size[1]:
                     image.thumbnail(max_size, Image.Resampling.LANCZOS)
-                
+
                 images.append(image)
 
                 # Extract text
                 text_content = page.get_text()
-                metadata.append({
-                    "page_num": page_num + 1,
-                    "doc_name": actual_doc_name,
-                    "text_content": text_content,
-                    "file_size": len(img_data),
-                })
+                metadata.append(
+                    {
+                        "page_num": page_num + 1,
+                        "doc_name": actual_doc_name,
+                        "text_content": text_content,
+                        "file_size": len(img_data),
+                    }
+                )
 
                 # Update progress
                 page_progress = 20.0 + ((page_num + 1) / total_pages) * 20.0
@@ -1645,21 +1781,23 @@ class ColPaliHTTPServer:
                 await asyncio.sleep(0.05)
 
             doc.close()
-            
+
             # Memory cleanup after PDF processing
             self.model_manager.cleanup_memory()
 
             # The encode_pages method is now memory-optimized and returns embeddings as a generator
             # We need to collect the actual embeddings
-            self.logger.info(f"Task {task_id}: Starting memory-optimized ColPali encoding")
-            
+            self.logger.info(
+                f"Task {task_id}: Starting memory-optimized ColPali encoding"
+            )
+
             # Process images in very small batches with the memory-safe approach
             embeddings = []
             batch_size = 1  # Very conservative for memory safety
-            
+
             for i in range(0, len(images), batch_size):
-                batch_images = images[i:i + batch_size]
-                
+                batch_images = images[i : i + batch_size]
+
                 # Update progress
                 encode_progress = 40.0 + ((i + 1) / len(images)) * 30.0
                 progress_update = StreamingProgress(
@@ -1671,42 +1809,50 @@ class ColPaliHTTPServer:
                     details=f"Memory-safe batch processing",
                 )
                 self.latest_progress[task_id] = progress_update
-                
+
                 try:
                     # Process with processor
-                    batch_inputs = self.model_manager.processor.process_images(batch_images)
-                    
+                    batch_inputs = self.model_manager.processor.process_images(
+                        batch_images
+                    )
+
                     # Move to device
                     device_obj = self.model_manager._get_device_obj()
                     for key in batch_inputs:
                         if isinstance(batch_inputs[key], torch.Tensor):
                             batch_inputs[key] = batch_inputs[key].to(device_obj)
-                    
+
                     # Get embeddings with memory management
                     with torch.no_grad():
                         batch_embeddings = self.model_manager.model(**batch_inputs)
-                    
+
                     # Immediately move to CPU and store
                     for emb in batch_embeddings:
                         embeddings.append(emb.cpu().detach())
-                    
+
                     # Clean up immediately after each batch
                     del batch_embeddings, batch_inputs
                     self.model_manager.cleanup_memory()
-                    
+
                 except Exception as e:
-                    self.logger.error(f"Task {task_id}: Encoding error for batch {i}: {e}")
+                    self.logger.error(
+                        f"Task {task_id}: Encoding error for batch {i}: {e}"
+                    )
                     # Continue with next batch rather than failing completely
                     continue
-                
+
                 # Brief pause for memory recovery
                 await asyncio.sleep(0.1)
 
-            self.logger.info(f"Task {task_id}: Generated {len(embeddings)} embeddings successfully")
+            self.logger.info(
+                f"Task {task_id}: Generated {len(embeddings)} embeddings successfully"
+            )
 
             # Store in database
             self.logger.info(f"Task {task_id}: Storing embeddings in LanceDB")
-            async for progress in self.db_manager.store_embeddings(embeddings, metadata):
+            async for progress in self.db_manager.store_embeddings(
+                embeddings, metadata
+            ):
                 progress.task_id = task_id
                 progress.step_num = 5
                 progress.total_steps = 6
@@ -1806,7 +1952,7 @@ class ColPaliHTTPServer:
 
             # Additional check: verify table has data
             try:
-                row_count = self.db_manager.table.count_rows()
+                row_count = len(self.db_manager.table)
                 self.logger.info(
                     f"Task {task_id}: Table contains {row_count} rows before search"
                 )
