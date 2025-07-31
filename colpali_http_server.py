@@ -950,9 +950,9 @@ class ColPaliHTTPServer:
                 )
                 self.latest_progress[task_id] = current_progress
                 await asyncio.sleep(0.05)  # Brief pause to allow progress updates
-        
-        doc.close()
-        self.logger.info(f"Task {task_id}: Extracted {len(images)} pages successfully")
+            
+            doc.close()
+            self.logger.info(f"Task {task_id}: Extracted {len(images)} pages successfully")
 
             # Encode pages
             self.logger.info(
