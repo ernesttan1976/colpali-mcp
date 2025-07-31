@@ -884,6 +884,7 @@
             display: grid;
             grid-template-columns: 2fr 1fr;
             gap: 1.5rem;
+            margin-bottom: 1rem;
         }
 
         @media (max-width: 768px) {
@@ -1518,7 +1519,7 @@ This would open a sophisticated document viewer with:
                 resultsContainer.innerHTML = results.map((result, index) => {
                     const hasImage = result.image_path && result.image_path !== null && result.image_path !== '';
                     const resultClass = hasImage ? 'result-item' : 'result-item no-image';
-                    const scorePercentage = (result.score * 100).toFixed(1);
+                    const scorePercentage = (result.score).toFixed(3);
                     
                     // Create image section
                     const imageSection = hasImage ? `
@@ -1545,7 +1546,7 @@ This would open a sophisticated document viewer with:
                                         <span class="result-page">Page ${result.page_num} • ${result.doc_name}</span>
                                     </div>
                                 </div>
-                                <div class="result-snippet">${result.snippet || 'Full text content available'}</div>
+                                <div class="result-snippet">${result.full_text || 'Full text content available'}</div>
                                 <div class="citation-list">
                                     <div class="citation-badge">
                                         📖 ${citation}
