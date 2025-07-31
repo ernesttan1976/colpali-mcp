@@ -24,8 +24,23 @@ from pydantic import BaseModel
 import uvicorn
 from fastapi.middleware.cors import CORSMiddleware
 
-# Mock ColPali imports (replace with actual imports)
-# from colpali_engine import ColPaliModel, ColPaliProcessor
+# ColPali imports for production
+try:
+    from colpali_engine.models import ColQwen2, ColQwen2Processor
+    COLPALI_ENGINE_AVAILABLE = True
+    print("✅ Using ColQwen2 for Apple Silicon optimization")
+except ImportError:
+    try:
+        from colpali_engine.models import ColPali, ColPaliProcessor
+        COLPALI_ENGINE_AVAILABLE = True
+        print("✅ Using ColPali (fallback)")
+    except ImportError:
+        COLPALI_ENGINE_AVAILABLE = False
+        print("⚠️  colpali-engine not available, falling back to transformers")
+    
+from transformers import AutoProcessor, AutoModel
+from torch.utils.data import DataLoader
+import torch.nn.functional as F
 
 
 @dataclass
@@ -73,11 +88,38 @@ class TaskProgressResponse(BaseModel):
 class ColPaliModelManager:
     """Handles ColPali model loading and inference"""
 
-    def __init__(self, device: str = "mps"):
-        self.device = device
+    def __init__(self, device: str = "auto", model_name: str = "vidore/colqwen2-v1.0"):
+        # Handle device selection properly for Apple Silicon
+        if device == "auto":
+            if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+                self.device = "mps"
+                # Set Apple Silicon memory optimization flags
+                import os
+                os.environ['PYTORCH_MPS_HIGH_WATERMARK_RATIO'] = '0.0'
+                os.environ['PYTORCH_ENABLE_MPS_FALLBACK'] = '1'
+                print("🍎 Apple Silicon MPS detected and enabled with optimizations")
+            elif torch.cuda.is_available():
+                self.device = "cuda"
+                print("✅ CUDA detected and enabled")
+            else:
+                self.device = "cpu"
+                print("⚠️  Using CPU (MPS/CUDA not available)")
+        else:
+            self.device = device
+            print(f"🎯 Using specified device: {device}")
+            
+        self.model_name = model_name
         self.model = None
         self.processor = None
         self.model_loaded = False
+        
+        # Setup logging
+        self.logger = logging.getLogger(__name__)
+        self.logger.info(f"ColPali ModelManager initialized - device: {self.device}, model: {model_name}")
+        
+    def _get_device_obj(self):
+        """Convert device string to torch.device object if needed"""
+        return torch.device(self.device) if isinstance(self.device, str) else self.device
 
     async def load_model(self) -> AsyncGenerator[StreamingProgress, None]:
         """Load ColPali model with streaming progress"""
@@ -89,50 +131,102 @@ class ColPaliModelManager:
             current_step="Initializing model loading",
             step_num=1,
             total_steps=3,
-            details="Checking device availability",
+            details=f"Loading ColPali model: {self.model_name}",
         )
 
-        # Simulate model loading delay
-        await asyncio.sleep(1)
+        try:
+            # Load processor first
+            yield StreamingProgress(
+                task_id=task_id,
+                progress=20.0,
+                current_step="Loading ColPali processor",
+                step_num=2,
+                total_steps=3,
+                details="Loading tokenizer and image processor",
+            )
 
-        yield StreamingProgress(
-            task_id=task_id,
-            progress=30.0,
-            current_step="Loading ColPali processor",
-            step_num=2,
-            total_steps=3,
-            details="Loading tokenizer and image processor",
-        )
+            self.logger.info(f"Loading ColPali processor from {self.model_name}")
+            
+            # Use the correct processor class
+            if "colqwen2" in self.model_name.lower():
+                self.processor = ColQwen2Processor.from_pretrained(self.model_name, trust_remote_code=True)
+                self.logger.info("Using ColQwen2Processor for Apple Silicon")
+            elif COLPALI_ENGINE_AVAILABLE:
+                self.processor = ColPaliProcessor.from_pretrained(self.model_name)
+                self.logger.info("Using ColPaliProcessor")
+            else:
+                self.processor = AutoProcessor.from_pretrained(self.model_name)
+                self.logger.info("Using AutoProcessor fallback")
+                
+            self.logger.info("ColPali processor loaded successfully")
 
-        # Mock processor loading
-        await asyncio.sleep(2)
-        # self.processor = ColPaliProcessor.from_pretrained("vidore/colpali")
+            yield StreamingProgress(
+                task_id=task_id,
+                progress=60.0,
+                current_step="Loading ColPali model weights",
+                step_num=3,
+                total_steps=3,
+                details=f"Loading to {self.device} device",
+            )
 
-        yield StreamingProgress(
-            task_id=task_id,
-            progress=70.0,
-            current_step="Loading ColPali model weights",
-            step_num=3,
-            total_steps=3,
-            details=f"Loading to {self.device} device",
-        )
+            # Load model
+            self.logger.info(f"Loading ColPali model from {self.model_name}")
+            
+            # Use the correct model class and settings for Apple Silicon
+            if "colqwen2" in self.model_name.lower():
+                # Use ColQwen2 for Apple Silicon optimization
+                self.model = ColQwen2.from_pretrained(
+                    self.model_name,
+                    torch_dtype=torch.float16,  # Use float16 for memory efficiency
+                    device_map=self.device,
+                    trust_remote_code=True,
+                    low_cpu_mem_usage=True
+                )
+                self.logger.info("Using ColQwen2 for Apple Silicon")
+            else:
+                # Fallback to standard ColPali
+                if COLPALI_ENGINE_AVAILABLE:
+                    self.model = ColPali.from_pretrained(
+                        self.model_name,
+                        torch_dtype=torch.float16 if self.device == "mps" else torch.float32,
+                        device_map=self.device
+                    )
+                    self.logger.info("Using ColPali engine")
+                else:
+                    self.model = AutoModel.from_pretrained(
+                        self.model_name,
+                        torch_dtype=torch.float32,
+                        trust_remote_code=True
+                    )
+                    self.model.to(self.device)
+                    self.logger.info("Using transformers AutoModel")
+                    
+            self.model.eval()  # Set to evaluation mode
+            self.logger.info(f"ColPali model loaded successfully on {self.device}")
 
-        # Mock model loading
-        await asyncio.sleep(3)
-        # self.model = ColPaliModel.from_pretrained("vidore/colpali")
-        # self.model.to(self.device)
+            self.model_loaded = True
 
-        self.model_loaded = True
-
-        yield StreamingProgress(
-            task_id=task_id,
-            progress=100.0,
-            current_step="Model loaded successfully",
-            step_num=3,
-            total_steps=3,
-            details=f"ColPali ready on {self.device}",
-            throughput="Ready for inference",
-        )
+            yield StreamingProgress(
+                task_id=task_id,
+                progress=100.0,
+                current_step="Model loaded successfully",
+                step_num=3,
+                total_steps=3,
+                details=f"ColPali ready on {self.device}",
+                throughput="Ready for inference",
+            )
+            
+        except Exception as e:
+            self.logger.error(f"Failed to load ColPali model: {str(e)}", exc_info=True)
+            yield StreamingProgress(
+                task_id=task_id,
+                progress=0.0,
+                current_step="Model loading failed",
+                step_num=0,
+                total_steps=1,
+                error=f"Failed to load ColPali model: {str(e)}",
+            )
+            raise
 
     async def encode_pages(
         self, images: List[Image.Image]
@@ -148,45 +242,90 @@ class ColPaliModelManager:
             current_step="Starting page encoding",
             step_num=1,
             total_steps=total_pages,
-            details=f"Processing {total_pages} pages",
+            details=f"Processing {total_pages} pages with ColPali",
         )
 
-        embeddings = []
+        if not self.model_loaded:
+            raise RuntimeError("ColPali model not loaded. Call load_model() first.")
 
-        for i, image in enumerate(images):
-            current_progress = (i / total_pages) * 100
+        embeddings = []
+        batch_size = 4  # Process images in batches for efficiency
+        
+        try:
+            with torch.no_grad():  # Disable gradient computation for inference
+                for i in range(0, total_pages, batch_size):
+                    batch_images = images[i:i + batch_size]
+                    batch_start = i
+                    batch_end = min(i + batch_size, total_pages)
+                    
+                    current_progress = (batch_start / total_pages) * 100
+                    elapsed = time.time() - start_time
+                    pages_per_sec = batch_start / elapsed if elapsed > 0 else 0
+                    eta = (total_pages - batch_start) / pages_per_sec if pages_per_sec > 0 else None
+
+                    yield StreamingProgress(
+                        task_id=task_id,
+                        progress=current_progress,
+                        current_step=f"Encoding pages {batch_start + 1}-{batch_end}/{total_pages}",
+                        step_num=batch_start + 1,
+                        total_steps=total_pages,
+                        details=f"Batch size: {len(batch_images)}",
+                        eta_seconds=int(eta) if eta else None,
+                        throughput=f"{pages_per_sec:.1f} pages/sec",
+                    )
+
+                    # Process batch of images
+                    if COLPALI_ENGINE_AVAILABLE and hasattr(self.processor, 'process_images'):
+                        batch_inputs = self.processor.process_images(batch_images)
+                    else:
+                        # Fallback for transformers processor
+                        batch_inputs = self.processor(
+                            images=batch_images,
+                            return_tensors="pt",
+                            padding=True
+                        )
+                    
+                    # Move to device (handle string device properly)
+                    device_obj = self._get_device_obj()
+                    for key in batch_inputs:
+                        if isinstance(batch_inputs[key], torch.Tensor):
+                            batch_inputs[key] = batch_inputs[key].to(device_obj)
+                    
+                    # Get embeddings from ColPali model
+                    batch_embeddings = self.model(**batch_inputs)
+                    
+                    # Store embeddings (convert to CPU to save GPU memory)
+                    for emb in batch_embeddings:
+                        embeddings.append(emb.cpu())
+                    
+                    # Small delay to allow progress updates
+                    await asyncio.sleep(0.1)
+
+            final_progress = (total_pages / total_pages) * 100
             elapsed = time.time() - start_time
-            pages_per_sec = (i + 1) / elapsed if elapsed > 0 else 0
-            eta = (total_pages - i - 1) / pages_per_sec if pages_per_sec > 0 else None
+            avg_throughput = total_pages / elapsed if elapsed > 0 else 0
 
             yield StreamingProgress(
                 task_id=task_id,
-                progress=current_progress,
-                current_step=f"Encoding page {i + 1}/{total_pages}",
-                step_num=i + 1,
+                progress=100.0,
+                current_step="Page encoding complete",
+                step_num=total_pages,
                 total_steps=total_pages,
-                details=f"Processing image {image.size}",
-                eta_seconds=int(eta) if eta else None,
-                throughput=f"{pages_per_sec:.1f} pages/sec",
+                details=f"Generated {len(embeddings)} embeddings",
+                throughput=f"Average: {avg_throughput:.1f} pages/sec",
             )
-
-            # Simulate ColPali encoding
-            await asyncio.sleep(0.5)  # Mock processing time
-
-            # Mock embedding generation
-            # embedding = self.model.encode_image(image)
-            embedding = torch.randn(1, 128)  # Mock embedding
-            embeddings.append(embedding)
-
-        yield StreamingProgress(
-            task_id=task_id,
-            progress=100.0,
-            current_step="Page encoding complete",
-            step_num=total_pages,
-            total_steps=total_pages,
-            details=f"Generated {len(embeddings)} embeddings",
-            throughput=f"Average: {total_pages / elapsed:.1f} pages/sec",
-        )
+            
+        except Exception as e:
+            self.logger.error(f"Failed to encode pages: {str(e)}", exc_info=True)
+            yield StreamingProgress(
+                task_id=task_id,
+                progress=0.0,
+                current_step="Encoding failed",
+                step_num=0,
+                total_steps=1,
+                error=f"Failed to encode pages: {str(e)}",
+            )
+            raise
 
     async def encode_query(self, query: str) -> AsyncGenerator[StreamingProgress, None]:
         """Encode search query with streaming progress"""
@@ -201,48 +340,103 @@ class ColPaliModelManager:
             details=f"Query: '{query[:50]}...'",
         )
 
-        await asyncio.sleep(0.5)
+        if not self.model_loaded:
+            raise RuntimeError("ColPali model not loaded. Call load_model() first.")
 
-        yield StreamingProgress(
-            task_id=task_id,
-            progress=40.0,
-            current_step="Tokenizing query",
-            step_num=2,
-            total_steps=3,
-            details="Converting text to tokens",
-        )
+        try:
+            yield StreamingProgress(
+                task_id=task_id,
+                progress=40.0,
+                current_step="Tokenizing query",
+                step_num=2,
+                total_steps=3,
+                details="Converting text to tokens",
+            )
 
-        await asyncio.sleep(1.0)
+            # Process query with ColPali processor
+            with torch.no_grad():
+                if COLPALI_ENGINE_AVAILABLE and hasattr(self.processor, 'process_queries'):
+                    query_inputs = self.processor.process_queries([query])
+                else:
+                    # Fallback for transformers processor
+                    query_inputs = self.processor(
+                        text=[query],
+                        return_tensors="pt",
+                        padding=True
+                    )
+                
+                # Move to device (handle string device properly)
+                device_obj = self._get_device_obj()
+                for key in query_inputs:
+                    if isinstance(query_inputs[key], torch.Tensor):
+                        query_inputs[key] = query_inputs[key].to(device_obj)
 
-        yield StreamingProgress(
-            task_id=task_id,
-            progress=80.0,
-            current_step="Generating embedding",
-            step_num=3,
-            total_steps=3,
-            details="ColPali query encoding",
-        )
+                yield StreamingProgress(
+                    task_id=task_id,
+                    progress=80.0,
+                    current_step="Generating embedding",
+                    step_num=3,
+                    total_steps=3,
+                    details="ColPali query encoding",
+                )
 
-        await asyncio.sleep(1.5)
+                # Get query embedding from ColPali model
+                query_embedding = self.model(**query_inputs)
 
-        # Mock query embedding
-        # query_embedding = self.model.encode_query(query)
-        query_embedding = torch.randn(1, 128)
-
-        yield StreamingProgress(
-            task_id=task_id,
-            progress=100.0,
-            current_step="Query encoded successfully",
-            step_num=3,
-            total_steps=3,
-            details="Ready for similarity search",
-        )
+                yield StreamingProgress(
+                    task_id=task_id,
+                    progress=100.0,
+                    current_step="Query encoded successfully",
+                    step_num=3,
+                    total_steps=3,
+                    details="Ready for similarity search",
+                )
+                
+        except Exception as e:
+            self.logger.error(f"Failed to encode query: {str(e)}", exc_info=True)
+            yield StreamingProgress(
+                task_id=task_id,
+                progress=0.0,
+                current_step="Query encoding failed",
+                step_num=0,
+                total_steps=1,
+                error=f"Failed to encode query: {str(e)}",
+            )
+            raise
 
     async def encode_query_simple(self, query: str) -> torch.Tensor:
         """Simple query encoding that returns the embedding directly"""
-        # Mock query embedding - replace with actual ColPali encoding
-        # query_embedding = self.model.encode_query(query)
-        return torch.randn(1, 128)
+        if not self.model_loaded:
+            raise RuntimeError("ColPali model not loaded. Call load_model() first.")
+            
+        try:
+            with torch.no_grad():
+                # Process query with ColPali processor
+                if COLPALI_ENGINE_AVAILABLE and hasattr(self.processor, 'process_queries'):
+                    query_inputs = self.processor.process_queries([query])
+                else:
+                    # Fallback for transformers processor
+                    query_inputs = self.processor(
+                        text=[query],
+                        return_tensors="pt",
+                        padding=True
+                    )
+                
+                # Move to device (handle string device properly)
+                device_obj = self._get_device_obj()
+                for key in query_inputs:
+                    if isinstance(query_inputs[key], torch.Tensor):
+                        query_inputs[key] = query_inputs[key].to(device_obj)
+                
+                # Get query embedding from ColPali model
+                query_embedding = self.model(**query_inputs)
+                
+                # Return first embedding (for single query)
+                return query_embedding[0].cpu()  # Move back to CPU for storage
+                
+        except Exception as e:
+            self.logger.error(f"Failed to encode query '{query}': {str(e)}", exc_info=True)
+            raise
 
 
 class LanceDBManager:
@@ -255,9 +449,33 @@ class LanceDBManager:
 
     async def initialize(self):
         """Initialize LanceDB connection"""
-        self.db = lancedb.connect(self.db_path)
+        logger = logging.getLogger(__name__)
+        logger.info(f"Initializing LanceDB connection at: {self.db_path}")
+        
+        try:
+            self.db = lancedb.connect(self.db_path)
+            logger.info(f"LanceDB connection established successfully")
+            
+            # Check if documents table exists
+            try:
+                existing_tables = self.db.table_names()
+                logger.info(f"Existing tables in database: {existing_tables}")
+                
+                if "documents" in existing_tables:
+                    self.table = self.db.open_table("documents")
+                    row_count = self.table.count_rows()
+                    logger.info(f"Opened existing 'documents' table with {row_count} rows")
+                else:
+                    logger.info("No 'documents' table found - will be created when first document is ingested")
+                    
+            except Exception as table_check_error:
+                logger.warning(f"Could not check existing tables: {table_check_error}")
+                
+        except Exception as e:
+            logger.error(f"Failed to initialize LanceDB: {str(e)}", exc_info=True)
+            raise
 
-    async def search_embeddings(self, query_embedding, limit=10, score_threshold=0.7):
+    async def search_embeddings(self, query_embedding, limit=10, score_threshold=0.8):
         """
         Search for similar embeddings in the database
 
@@ -270,26 +488,94 @@ class LanceDBManager:
             StreamingProgress objects
         """
         task_id = f"search_{uuid.uuid4().hex[:8]}"
+        logger = logging.getLogger(__name__)
+        
+        logger.info(f"Task {task_id}: Starting search with limit={limit}, score_threshold={score_threshold}")
 
         try:
+            # DEBUG: Check database and table state
+            logger.info(f"Task {task_id}: Database connection: {self.db is not None}")
+            logger.info(f"Task {task_id}: Table initialized: {self.table is not None}")
+            
+            if self.db is None:
+                logger.error(f"Task {task_id}: Database connection is None - initializing...")
+                await self.initialize()
+                
             if self.table is None:
-                yield StreamingProgress(
-                    task_id=task_id,
-                    progress=0.0,
-                    current_step="Database not initialized",
-                    step_num=0,
-                    total_steps=1,
-                    error="Database table not initialized",
-                )
-                return
+                logger.error(f"Task {task_id}: Table is None - attempting to open existing table")
+                try:
+                    self.table = self.db.open_table("documents")
+                    logger.info(f"Task {task_id}: Successfully opened existing table")
+                except Exception as table_error:
+                    logger.error(f"Task {task_id}: Could not open table: {table_error}")
+                    yield StreamingProgress(
+                        task_id=task_id,
+                        progress=0.0,
+                        current_step="Database table not found",
+                        step_num=0,
+                        total_steps=1,
+                        error=f"Database table not initialized: {str(table_error)}",
+                    )
+                    return
+
+            # DEBUG: Check table contents before search
+            try:
+                table_count = self.table.count_rows()
+                logger.info(f"Task {task_id}: Table contains {table_count} rows")
+                
+                if table_count == 0:
+                    logger.warning(f"Task {task_id}: Table is empty - no documents indexed")
+                    yield StreamingProgress(
+                        task_id=task_id,
+                        progress=100.0,
+                        current_step="Search completed",
+                        step_num=3,
+                        total_steps=3,
+                        details="No documents in database",
+                        results=[],
+                    )
+                    return
+                    
+                # Sample a few rows to verify data structure
+                sample_data = self.table.to_pandas().head(3)
+                logger.info(f"Task {task_id}: Sample data columns: {list(sample_data.columns)}")
+                logger.info(f"Task {task_id}: Sample data shape: {sample_data.shape}")
+                
+                # Check if vector column exists and has correct format
+                if 'vector' in sample_data.columns:
+                    first_vector = sample_data['vector'].iloc[0] if len(sample_data) > 0 else None
+                    if first_vector is not None:
+                        vector_type = type(first_vector)
+                        vector_len = len(first_vector) if hasattr(first_vector, '__len__') else 'unknown'
+                        logger.info(f"Task {task_id}: Vector column format - type: {vector_type}, length: {vector_len}")
+                    else:
+                        logger.warning(f"Task {task_id}: Vector column exists but first vector is None")
+                else:
+                    logger.error(f"Task {task_id}: No 'vector' column found in table!")
+                    
+            except Exception as debug_error:
+                logger.error(f"Task {task_id}: Error during table debugging: {debug_error}")
 
             yield StreamingProgress(
                 task_id=task_id,
                 progress=25.0,
-                current_step="Searching embeddings",
+                current_step="Query encoding",
                 step_num=1,
-                total_steps=3,
-                details="Performing vector similarity search",
+                total_steps=4,
+                details="Query encoded successfully",
+            )
+
+            # DEBUG: Analyze query embedding format
+            logger.info(f"Task {task_id}: Query embedding type: {type(query_embedding)}")
+            logger.info(f"Task {task_id}: Query embedding shape: {getattr(query_embedding, 'shape', 'no shape attr')}")
+            
+            yield StreamingProgress(
+                task_id=task_id,
+                progress=50.0,
+                current_step="Performing vector similarity search",
+                step_num=2,
+                total_steps=4,
+                details="Searching embeddings",
             )
 
             # Perform vector similarity search
@@ -297,24 +583,65 @@ class LanceDBManager:
                 # Ensure query_embedding is in the correct format for LanceDB
                 if hasattr(query_embedding, "numpy"):
                     search_vector = query_embedding.numpy().flatten().tolist()
+                    logger.info(f"Task {task_id}: Converted tensor to numpy, flattened length: {len(search_vector)}")
                 elif isinstance(query_embedding, torch.Tensor):
                     search_vector = query_embedding.flatten().tolist()
+                    logger.info(f"Task {task_id}: Converted torch tensor, flattened length: {len(search_vector)}")
                 elif hasattr(query_embedding, "flatten"):
                     search_vector = query_embedding.flatten()
                     if hasattr(search_vector, "tolist"):
                         search_vector = search_vector.tolist()
+                    logger.info(f"Task {task_id}: Used flatten method, final length: {len(search_vector)}")
                 else:
                     search_vector = query_embedding
+                    logger.info(f"Task {task_id}: Used query_embedding as-is, type: {type(search_vector)}")
 
                 # Ensure it's a list of numbers
                 if not isinstance(search_vector, list):
                     search_vector = list(search_vector)
+                    
+                logger.info(f"Task {task_id}: Final search vector - type: {type(search_vector)}, length: {len(search_vector)}")
+                logger.info(f"Task {task_id}: Search vector sample (first 5): {search_vector[:5]}")
 
                 # Use LanceDB search with proper format and specify vector column
-                search_query = self.table.search(search_vector, vector_column_name="vector").limit(limit)
-                results = search_query.to_pandas().to_dict("records")
+                logger.info(f"Task {task_id}: Executing LanceDB search with limit={limit}")
+                logger.info(f"Task {task_id}: Creating search query with vector_column_name='vector'")
+                
+                try:
+                    search_query = self.table.search(search_vector, vector_column_name="vector").limit(limit)
+                    logger.info(f"Task {task_id}: Search query object created successfully")
+                except Exception as query_error:
+                    logger.error(f"Task {task_id}: Failed to create search query: {query_error}")
+                    raise
+                
+                logger.info(f"Task {task_id}: Converting search query to pandas DataFrame...")
+                try:
+                    results_df = search_query.to_pandas()
+                    logger.info(f"Task {task_id}: DataFrame created - shape: {results_df.shape}, columns: {list(results_df.columns)}")
+                    
+                    results = results_df.to_dict("records")
+                    logger.info(f"Task {task_id}: Converted to records - count: {len(results)}")
+                    
+                except Exception as pandas_error:
+                    logger.error(f"Task {task_id}: Failed to convert to pandas: {pandas_error}")
+                    raise
+                
+                # DEBUG: Log details about search results
+                if results:
+                    logger.info(f"Task {task_id}: First result keys: {list(results[0].keys())}")
+                    for i, result in enumerate(results[:3]):  # Log first 3 results
+                        distance = result.get('_distance', 'no_distance')
+                        # Use corrected similarity calculation for ColPali
+                        if isinstance(distance, (int, float)):
+                            cosine_similarity = max(0, 1 - (distance ** 2) / 2)
+                            logger.info(f"Task {task_id}: Result {i}: l2_distance={distance:.4f}, cosine_similarity={cosine_similarity:.4f}, doc={result.get('doc_name', 'no_doc')}, page={result.get('page_num', 'no_page')}")
+                        else:
+                            logger.info(f"Task {task_id}: Result {i}: distance={distance}, doc={result.get('doc_name', 'no_doc')}, page={result.get('page_num', 'no_page')}")
+                else:
+                    logger.warning(f"Task {task_id}: No results returned from vector search")
 
             except Exception as search_error:
+                logger.error(f"Task {task_id}: Vector search failed: {str(search_error)}", exc_info=True)
                 yield StreamingProgress(
                     task_id=task_id,
                     progress=0.0,
@@ -327,44 +654,66 @@ class LanceDBManager:
 
             yield StreamingProgress(
                 task_id=task_id,
-                progress=75.0,
+                progress=80.0,
                 current_step="Processing results",
-                step_num=2,
-                total_steps=3,
+                step_num=3,
+                total_steps=4,
                 details=f"Found {len(results)} potential matches",
             )
 
+            # DEBUG: Log score filtering process
+            logger.info(f"Task {task_id}: Applying score threshold filter: {score_threshold}")
+            logger.info(f"Task {task_id}: PRODUCTION MODE - Using real ColPali embeddings")
+            original_count = len(results)
+            
             # Filter by score threshold if needed
             if score_threshold > 0:
-                results = [
-                    r
-                    for r in results
-                    if r.get("_distance", 1.0) <= (1 - score_threshold)
-                ]
+                filtered_results = []
+                for r in results:
+                    distance = r.get("_distance", float('inf'))
+                    # For ColPali embeddings, use cosine similarity
+                    # LanceDB returns L2 distance, convert to cosine similarity
+                    # Assuming normalized embeddings: cosine_sim = 1 - (l2_distance^2 / 2)
+                    cosine_similarity = max(0, 1 - (distance ** 2) / 2)
+                    logger.debug(f"Task {task_id}: Checking result - l2_distance: {distance:.4f}, cosine_similarity: {cosine_similarity:.4f}, threshold: {score_threshold}")
+                    if cosine_similarity >= score_threshold:
+                        filtered_results.append(r)
+                        
+                results = filtered_results
+                logger.info(f"Task {task_id}: Score filtering: {original_count} -> {len(results)} results (threshold: {score_threshold})")
+            else:
+                logger.info(f"Task {task_id}: No score filtering applied (threshold: {score_threshold})")
 
             # Format results
             search_results = []
-            for row in results:
-                search_results.append(
-                    SearchResult(
-                        page_num=row.get("page_num", 0),
-                        doc_name=row.get("doc_name", ""),
-                        score=1
-                        - row.get(
-                            "_distance", 1.0
-                        ),  # Convert distance to similarity score
-                        snippet=row.get("text_content", "")[
-                            :200
-                        ],  # First 200 chars as snippet
-                    )
+            for i, row in enumerate(results):
+                distance = row.get("_distance", float('inf'))
+                
+                # For ColPali embeddings, convert L2 distance to cosine similarity
+                # Assuming normalized embeddings: cosine_sim = 1 - (l2_distance^2 / 2)
+                cosine_similarity = max(0, 1 - (distance ** 2) / 2)
+                    
+                text_content = row.get("text_content", "")
+                snippet = text_content[:200] if text_content else "No text content"
+                
+                search_result = SearchResult(
+                    page_num=row.get("page_num", 0),
+                    doc_name=row.get("doc_name", ""),
+                    score=cosine_similarity,  # Use cosine similarity score
+                    snippet=snippet
                 )
+                search_results.append(search_result)
+                
+                logger.debug(f"Task {task_id}: Result {i}: {search_result.doc_name}, page {search_result.page_num}, cosine_sim {cosine_similarity:.4f} (l2_distance: {distance:.4f})")
 
+            logger.info(f"Task {task_id}: Final results: {len(search_results)} matches")
+            
             yield StreamingProgress(
                 task_id=task_id,
                 progress=100.0,
                 current_step="Search completed",
-                step_num=3,
-                total_steps=3,
+                step_num=4,
+                total_steps=4,
                 details=f"Found {len(search_results)} relevant matches",
                 results=[
                     result.__dict__ for result in search_results
@@ -372,6 +721,7 @@ class LanceDBManager:
             )
 
         except Exception as e:
+            logger.error(f"Task {task_id}: Search failed with exception: {str(e)}", exc_info=True)
             yield StreamingProgress(
                 task_id=task_id,
                 progress=0.0,
@@ -596,7 +946,20 @@ class ColPaliHTTPServer:
             return {
                 "status": "healthy",
                 "model_loaded": self.model_manager.model_loaded,
+                "model_name": self.model_manager.model_name if hasattr(self.model_manager, 'model_name') else "unknown",
+                "device": str(self.model_manager.device) if hasattr(self.model_manager, 'device') else "unknown",
                 "active_tasks": len(self.active_tasks),
+            }
+
+        @self.app.get("/model/status")
+        async def model_status():
+            """Get detailed model loading status"""
+            return {
+                "model_loaded": self.model_manager.model_loaded,
+                "model_name": getattr(self.model_manager, 'model_name', 'unknown'),
+                "device": str(getattr(self.model_manager, 'device', 'unknown')),
+                "processor_loaded": self.model_manager.processor is not None,
+                "model_ready": self.model_manager.model is not None,
             }
 
         @self.app.post("/initialize")
@@ -896,21 +1259,24 @@ class ColPaliHTTPServer:
         try:
             # Ensure model is loaded
             if not self.model_manager.model_loaded:
-                self.logger.info(f"Task {task_id}: Model not loaded, initializing...")
+                self.logger.info(f"Task {task_id}: Model not loaded, initializing automatically...")
                 async for progress in self.model_manager.load_model():
                     progress.task_id = task_id
                     progress.step_num = 2
                     progress.total_steps = 6
+                    # Adjust progress to fit within step 2's range (5-35%)
+                    progress.progress = 5.0 + (progress.progress / 100.0) * 30.0
+                    progress.current_step = f"Loading ColPali model: {progress.current_step}"
                     self.latest_progress[task_id] = progress
                     self.logger.info(
                         f"Task {task_id}: Model loading - {progress.current_step} ({progress.progress:.1f}%)"
                     )
                     await asyncio.sleep(0.1)  # Allow other tasks to run
 
-            # Extract PDF pages - CAPTURE THE ACTUAL DATA
-            self.logger.info(f"Task {task_id}: Starting PDF page extraction")
+            # Encode pages - CAPTURE THE ACTUAL DATA
+            self.logger.info(f"Task {task_id}: Starting ColPali page encoding")
             
-            # Open PDF and extract all pages directly
+            # Extract PDF pages directly (keeping existing extraction logic)
             doc = fitz.open(temp_file_path)
             total_pages = len(doc)
             
@@ -954,7 +1320,7 @@ class ColPaliHTTPServer:
             doc.close()
             self.logger.info(f"Task {task_id}: Extracted {len(images)} pages successfully")
 
-            # Encode pages
+            # Encode pages with real ColPali model
             self.logger.info(
                 f"Task {task_id}: Starting ColPali encoding for {len(images)} pages"
             )
@@ -975,8 +1341,52 @@ class ColPaliHTTPServer:
                     )
                 await asyncio.sleep(0.1)
 
-            embeddings = [torch.randn(1, 128) for _ in range(len(images))]
-            self.logger.info(f"Task {task_id}: Generated {len(embeddings)} embeddings")
+            # Get the actual embeddings from the generator
+            # Note: The encode_pages function now returns real embeddings, we need to capture them
+            self.logger.info(f"Task {task_id}: Generating embeddings using ColPali model")
+            
+            try:
+                # Use model_manager to encode all pages
+                embeddings = []
+                with torch.no_grad():
+                    batch_size = 4
+                    for i in range(0, len(images), batch_size):
+                        batch_images = images[i:i + batch_size]
+                        
+                        # Process batch
+                        batch_inputs = self.model_manager.processor.process_images(batch_images)
+                        
+                        # Move to device (handle string device properly)
+                        device_obj = self.model_manager._get_device_obj()
+                        for key in batch_inputs:
+                            if isinstance(batch_inputs[key], torch.Tensor):
+                                batch_inputs[key] = batch_inputs[key].to(device_obj)
+                        
+                        # Get embeddings
+                        batch_embeddings = self.model_manager.model(**batch_inputs)
+                        
+                        # Store embeddings (convert to CPU)
+                        for emb in batch_embeddings:
+                            embeddings.append(emb.cpu())
+                        
+                        # Update progress
+                        current_batch_progress = 40.0 + ((i + len(batch_images)) / len(images)) * 30.0
+                        progress = StreamingProgress(
+                            task_id=task_id,
+                            progress=current_batch_progress,
+                            current_step=f"Encoded {i + len(batch_images)}/{len(images)} pages",
+                            step_num=4,
+                            total_steps=6,
+                            details=f"Batch {i//batch_size + 1} complete"
+                        )
+                        self.latest_progress[task_id] = progress
+                        await asyncio.sleep(0.1)
+                        
+            except Exception as encoding_error:
+                self.logger.error(f"Task {task_id}: ColPali encoding failed: {encoding_error}", exc_info=True)
+                raise
+                
+            self.logger.info(f"Task {task_id}: Generated {len(embeddings)} real ColPali embeddings")
 
             # Store in database
             self.logger.info(f"Task {task_id}: Storing embeddings in LanceDB")
@@ -1038,8 +1448,37 @@ class ColPaliHTTPServer:
     async def process_search_background(self, task_id: str, request: SearchRequest):
         """Background processing of search with real-time progress updates"""
         try:
+            self.logger.info(f"Task {task_id}: Starting search background processing for query: '{request.query}'")
+            
+            # Check database manager initialization
+            self.logger.info(f"Task {task_id}: Database manager exists: {hasattr(self, 'db_manager')}")
+            if hasattr(self, "db_manager"):
+                self.logger.info(f"Task {task_id}: Database connection: {self.db_manager.db is not None}")
+                self.logger.info(f"Task {task_id}: Table connection: {self.db_manager.table is not None}")
+            
+            # Initialize database if needed
+            if not hasattr(self, "db_manager") or self.db_manager.db is None:
+                self.logger.info(f"Task {task_id}: Initializing database manager...")
+                await self.db_manager.initialize()
+            
+            # Check if ColPali model is loaded, if not, load it automatically
+            if not self.model_manager.model_loaded:
+                self.logger.info(f"Task {task_id}: ColPali model not loaded, initializing automatically...")
+                async for progress in self.model_manager.load_model():
+                    progress.task_id = task_id
+                    progress.step_num = 1
+                    progress.total_steps = 5  # Updated total steps
+                    progress.progress = progress.progress * 0.3  # Take 30% of progress for model loading
+                    progress.current_step = f"Loading ColPali model: {progress.current_step}"
+                    self.latest_progress[task_id] = progress
+                    self.logger.info(
+                        f"Task {task_id}: Model loading - {progress.current_step} ({progress.progress:.1f}%)"
+                    )
+                    await asyncio.sleep(0.1)
+            
             # Check if we have any documents indexed
-            if not hasattr(self, "db_manager") or self.db_manager.table is None:
+            if self.db_manager.table is None:
+                self.logger.warning(f"Task {task_id}: No documents table found")
                 error_progress = StreamingProgress(
                     task_id=task_id,
                     progress=0.0,
@@ -1050,60 +1489,97 @@ class ColPaliHTTPServer:
                 )
                 self.latest_progress[task_id] = error_progress
                 return
+            
+            # Additional check: verify table has data
+            try:
+                row_count = self.db_manager.table.count_rows()
+                self.logger.info(f"Task {task_id}: Table contains {row_count} rows before search")
+                if row_count == 0:
+                    self.logger.warning(f"Task {task_id}: Table exists but is empty")
+                    error_progress = StreamingProgress(
+                        task_id=task_id,
+                        progress=100.0,
+                        current_step="Search completed",
+                        step_num=5,
+                        total_steps=5,
+                        details="No documents indexed in database",
+                        results=[],
+                    )
+                    self.latest_progress[task_id] = error_progress
+                    return
+            except Exception as count_error:
+                self.logger.error(f"Task {task_id}: Could not count table rows: {count_error}")
 
             # Encode query
-            self.logger.info(f"Task {task_id}: Encoding search query")
+            self.logger.info(f"Task {task_id}: Encoding search query: '{request.query}'")
             query_embedding = None
             async for progress in self.model_manager.encode_query(request.query):
                 progress.task_id = task_id
                 progress.step_num = 2
-                progress.total_steps = 4
-                progress.progress = 5.0 + (progress.progress / 100.0) * 45.0
+                progress.total_steps = 5  # Updated total steps
+                progress.progress = 30.0 + (progress.progress / 100.0) * 25.0  # 30-55%
                 self.latest_progress[task_id] = progress
                 self.logger.info(
                     f"Task {task_id}: Query encoding - {progress.current_step} ({progress.progress:.1f}%)"
                 )
                 await asyncio.sleep(0.1)
 
-            # Set query_embedding (mock for now, replace with actual)
-            query_embedding = torch.randn(1, 128)
-
             # Get the actual query embedding
+            self.logger.info(f"Task {task_id}: Getting query embedding from model")
             query_embedding = await self.model_manager.encode_query_simple(
                 request.query
             )
+            self.logger.info(f"Task {task_id}: Query embedding generated - type: {type(query_embedding)}, shape: {getattr(query_embedding, 'shape', 'no shape')}")
 
             # Search database
-            self.logger.info(f"Task {task_id}: Performing vector similarity search")
+            self.logger.info(f"Task {task_id}: Performing vector similarity search with top_k={request.top_k}")
             search_results = None
+            progress_count = 0
             async for progress in self.db_manager.search_embeddings(
                 query_embedding, request.top_k
             ):
+                progress_count += 1
+                self.logger.info(f"Task {task_id}: Search progress update #{progress_count}: {progress.current_step}")
+                
                 # Update progress to fit within the overall search workflow
                 progress.task_id = task_id
                 progress.step_num = 3
-                progress.total_steps = 4
-                progress.progress = 50.0 + (progress.progress / 100.0) * 40.0
+                progress.total_steps = 5
+                progress.progress = 55.0 + (progress.progress / 100.0) * 40.0  # 55-95%
                 self.latest_progress[task_id] = progress
                 self.logger.info(
                     f"Task {task_id}: Vector search - {progress.current_step} ({progress.progress:.1f}%)"
                 )
 
                 # Capture results from the final progress update
-                if progress.progress >= 90.0 and progress.results:
+                if progress.results is not None:
                     search_results = progress.results
+                    self.logger.info(f"Task {task_id}: Captured search results: {len(search_results)} items")
+                    
+                # Log errors if any
+                if progress.error:
+                    self.logger.error(f"Task {task_id}: Search error: {progress.error}")
+                    
                 await asyncio.sleep(0.1)
 
             # Process search results (already converted to dicts in search_embeddings)
             results = search_results if search_results else []
+            self.logger.info(f"Task {task_id}: Final processed results count: {len(results)}")
+            
+            # Log details of results if any
+            if results:
+                for i, result in enumerate(results[:3]):  # Log first 3 results
+                    self.logger.info(f"Task {task_id}: Final result {i}: {result}")
+            else:
+                self.logger.warning(f"Task {task_id}: No final results to return")
 
             # Final completion
             final_progress = StreamingProgress(
                 task_id=task_id,
                 progress=100.0,
                 current_step="Search completed",
-                step_num=4,
-                total_steps=4,
+                step_num=5,
+                total_steps=5,
                 details=f"Found {len(results)} relevant matches",
                 results=results,  # Store actual results
             )
