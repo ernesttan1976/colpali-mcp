@@ -950,6 +950,7 @@ class LanceDBManager:
         """Store embeddings with streaming progress"""
         task_id = f"store_{uuid.uuid4().hex[:8]}"
         total_embeddings = len(embeddings)
+        logger = logging.getLogger(__name__)  # Add logger reference
 
         yield StreamingProgress(
             task_id=task_id,
@@ -995,14 +996,36 @@ class LanceDBManager:
             if self.db is None:
                 await self.initialize()
 
-            # Try to open existing table
+            # Try to open existing table or create new one
             try:
+                # First, try to open existing table
                 self.table = self.db.open_table("documents")
                 # Add new data to existing table
                 self.table.add(data)
-            except Exception:
-                # Create new table if doesn't exist
-                self.table = self.db.create_table("documents", data)
+                logger.info(f"Added {total_embeddings} embeddings to existing table")
+            except Exception as open_error:
+                logger.info(f"Could not open existing table: {open_error}")
+                try:
+                    # If opening fails, try to create new table
+                    self.table = self.db.create_table("documents", data)
+                    logger.info(f"Created new table with {total_embeddings} embeddings")
+                except Exception as create_error:
+                    logger.error(f"Could not create table: {create_error}")
+                    # If both fail, try alternative approaches
+                    try:
+                        # Check if table exists in database
+                        existing_tables = self.db.table_names()
+                        if "documents" in existing_tables:
+                            # Table exists, try to open it again with different approach
+                            self.table = self.db.open_table("documents")
+                            self.table.add(data)
+                            logger.info(f"Successfully added to existing table on retry")
+                        else:
+                            # Table doesn't exist, create it
+                            self.table = self.db.create_table("documents", data)
+                            logger.info(f"Created new table on retry")
+                    except Exception as final_error:
+                        raise Exception(f"Failed all storage attempts: open_error={open_error}, create_error={create_error}, final_error={final_error}")
 
             yield StreamingProgress(
                 task_id=task_id,
@@ -1497,16 +1520,11 @@ class ColPaliHTTPServer:
             # Encode pages - CAPTURE THE ACTUAL DATA
             self.logger.info(f"Task {task_id}: Starting ColPali page encoding")
 
-            # Extract PDF pages directly (keeping existing extraction logic)
+            # Extract PDF pages directly
             doc = fitz.open(temp_file_path)
             total_pages = len(doc)
             
-            # Limit processing if too many pages (adjust as needed)
-            if total_pages > 50:
-                self.logger.warning(f"Task {task_id}: Large document ({total_pages} pages), processing first 50 pages")
-                total_pages = 50
-
-            self.logger.info(f"Task {task_id}: Processing {total_pages} pages from PDF")
+            self.logger.info(f"Task {task_id}: Processing all {total_pages} pages from PDF")
 
             images = []
             metadata = []
