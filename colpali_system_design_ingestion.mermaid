@@ -1,0 +1,33 @@
+graph TD
+    A[📁 File Upload] --> B[📥 POST /ingest]
+    B --> C[🔄 Background PDF Task]
+    C --> D[📄 Extract Pages]
+    E[🤖 Load ColPali Model]
+    
+    D --> F[🖼️ Extract Images]
+    D --> G[📝 Extract Text]
+    E --> H[🧠 Encode with ColPali]
+    F --> E
+    G --> E
+    
+    H --> I[💾 Store Embeddings]
+    I --> J[🗄️ LanceDB]
+    F --> K[💿 Save Images]
+    K --> L[📁 File System]
+    
+    C --> M[📊 Progress Updates]
+    M --> N[⏳ Progress Tracker]
+    
+    classDef ui fill:#3b82f6,stroke:#1e40af,stroke-width:2px,color:white
+    classDef api fill:#ef4444,stroke:#dc2626,stroke-width:2px,color:white
+    classDef process fill:#10b981,stroke:#059669,stroke-width:2px,color:white
+    classDef model fill:#8b5cf6,stroke:#7c3aed,stroke-width:2px,color:white
+    classDef storage fill:#6b7280,stroke:#4b5563,stroke-width:2px,color:white
+    classDef progress fill:#f59e0b,stroke:#d97706,stroke-width:2px,color:white
+    
+    class A ui
+    class B api
+    class C,D,F,G process
+    class E,H model
+    class I,J,K,L storage
+    class M,N progress

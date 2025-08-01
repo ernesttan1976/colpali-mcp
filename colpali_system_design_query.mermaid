@@ -1,0 +1,31 @@
+graph TD
+    A[🔍 Search Query] --> B[📤 POST /search]
+    B --> C[🔄 Background Search Task]
+    C --> D[🤖 Encode Query]
+    E[🗄️ Search LanceDB]
+    
+    D --> F[🧠 ColPali Model]
+    F --> G[📊 Query Embedding]
+    G --> E
+    
+    E --> H[📏 MaxSim Scoring]
+    H --> I[🏆 Rank Results]
+    I --> J[📋 Format Response with Image URLs]
+    J --> K[✅ Return Top Matches to Client]
+    
+    C --> L[📊 Progress Updates]
+    L --> M[⏳ Progress Tracker]
+    
+    classDef ui fill:#3b82f6,stroke:#1e40af,stroke-width:2px,color:white
+    classDef api fill:#ef4444,stroke:#dc2626,stroke-width:2px,color:white
+    classDef process fill:#10b981,stroke:#059669,stroke-width:2px,color:white
+    classDef model fill:#8b5cf6,stroke:#7c3aed,stroke-width:2px,color:white
+    classDef response fill:#f97316,stroke:#ea580c,stroke-width:2px,color:white
+    classDef progress fill:#f59e0b,stroke:#d97706,stroke-width:2px,color:white
+    
+    class A ui
+    class B api
+    class C,H,I process
+    class D,E,F,G model
+    class J,K response
+    class L,M progress
